@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Longford GAA Golf Classic 2026 — Registration site
 
-## Getting Started
+A simple registration site built with **Next.js (App Router)**, **Supabase**, and deployable to **Vercel**. It has:
 
-First, run the development server:
+- A public registration form (a replica of the Golf Classic 2026 Jotform).
+- A hardcoded **organiser login** — no user sign-up.
+- An **admin dashboard** that shows every submission, neatly organised, with running totals.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+---
+
+## 1. Set up Supabase
+
+1. Create a free project at [supabase.com](https://supabase.com).
+2. In the dashboard go to **SQL Editor → New query**, paste the contents of
+   [`supabase/schema.sql`](supabase/schema.sql), and run it. This creates the
+   `registrations` table and the Row Level Security policy (anonymous users can
+   submit the form but cannot read the data).
+3. Go to **Settings → API** and copy:
+   - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
+   - **anon public** key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` (keep this secret)
+
+## 2. Configure environment variables
+
+Copy `.env.example` to `.env.local` and fill in the values:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+
+# Hardcoded admin login — change these!
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your-password
+ADMIN_SESSION_SECRET=a-long-random-string
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 3. Run locally
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Public form: <http://localhost:3000>
+- Organiser login: <http://localhost:3000/admin> (redirects to the login page)
 
-## Learn More
+## 4. Deploy to Vercel
 
-To learn more about Next.js, take a look at the following resources:
+1. Push this folder to a GitHub repo.
+2. Import it at [vercel.com/new](https://vercel.com/new).
+3. Add the same environment variables (from step 2) in
+   **Project → Settings → Environment Variables**.
+4. Deploy. That's it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+> Tip: install the CLI (`npm i -g vercel`) and run `vercel` to deploy from the
+> terminal, or `vercel env pull` to sync env vars locally.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## How it works
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Piece | File |
+| --- | --- |
+| Registration form (UI) | `app/RegistrationForm.tsx` |
+| Form submit + login/logout | `app/actions.ts` (server actions) |
+| Admin dashboard | `app/admin/page.tsx` |
+| Login page | `app/admin/login/` |
+| Route protection | `proxy.ts` (Next.js proxy/middleware) |
+| Hardcoded auth (signed cookie) | `lib/auth.ts` |
+| Supabase clients | `lib/supabase.ts` |
+| Database schema | `supabase/schema.sql` |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The admin session is a signed (HMAC-SHA256) httpOnly cookie, so it can't be
+forged. The dashboard reads submissions with the Supabase **service-role** key
+on the server only — it is never exposed to the browser.
