@@ -4,7 +4,17 @@ import banner from "@/public/banner.jpg";
 
 export default function Home() {
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-10 sm:py-14">
+    <main className="mx-auto w-full max-w-3xl px-4 py-6 sm:py-10">
+      {/* Top bar */}
+      <div className="mb-4 flex justify-end">
+        <a
+          href="/admin"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gaa-green/40 bg-white px-4 py-2 text-sm font-semibold text-gaa-green shadow-sm transition hover:bg-gaa-green hover:text-white"
+        >
+          🔑 Organiser login
+        </a>
+      </div>
+
       {/* Hero banner */}
       <header className="mb-8 overflow-hidden rounded-2xl shadow-lg ring-1 ring-black/5">
         <Image
@@ -22,12 +32,6 @@ export default function Home() {
       </p>
 
       <RegistrationForm />
-
-      <footer className="mt-10 text-center text-xs text-gray-400">
-        <a href="/admin" className="hover:text-gaa-green">
-          Organiser login
-        </a>
-      </footer>
     </main>
   );
 }

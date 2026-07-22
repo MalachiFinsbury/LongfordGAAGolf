@@ -17,6 +17,36 @@ const inputClass =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm outline-none transition focus:border-gaa-green focus:ring-2 focus:ring-gaa-green/30";
 const labelClass = "block text-sm font-medium text-gray-800 mb-1";
 
+function CopyValue({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+      <div className="min-w-0">
+        <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+          {label}
+        </p>
+        <p className="truncate font-mono text-sm text-gray-900">{value}</p>
+      </div>
+      <button
+        type="button"
+        onClick={copy}
+        className="shrink-0 rounded-md bg-gaa-green px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-gaa-green-dark"
+      >
+        {copied ? "Copied ✓" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
 function SubmitButton() {
   const { pending } = useFormStatus();
   return (
@@ -53,15 +83,32 @@ export default function RegistrationForm() {
 
   if (state.ok) {
     return (
-      <div className="rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5">
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gaa-green/10 text-3xl">
-          ✅
+      <div className="space-y-6">
+        <div className="rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gaa-green/10 text-3xl">
+            ✅
+          </div>
+          <h2 className="text-2xl font-bold text-gaa-green-dark">Thank you!</h2>
+          <p className="mt-2 text-gray-600">
+            Your registration for the Longford GAA Golf Classic 2026 has been
+            received. We&apos;ll be in touch about tee times.
+          </p>
         </div>
-        <h2 className="text-2xl font-bold text-gaa-green-dark">Thank you!</h2>
-        <p className="mt-2 text-gray-600">
-          Your registration for the Longford GAA Golf Classic 2026 has been
-          received. We&apos;ll be in touch about payment and tee times.
-        </p>
+
+        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+          <h3 className="text-lg font-bold text-gaa-green-dark">
+            Payment by bank transfer
+          </h3>
+          <p className="mt-1 text-sm text-gray-600">
+            To complete your entry, please transfer the total amount due to the
+            account below. Use your name as the payment reference.
+          </p>
+          <div className="mt-4 space-y-2">
+            <CopyValue label="Account name" value="Longford County Board GAA" />
+            <CopyValue label="IBAN" value="IE31IPBS99073152079039" />
+            <CopyValue label="BIC" value="IPBSIE2D" />
+          </div>
+        </div>
       </div>
     );
   }
