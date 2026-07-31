@@ -2,7 +2,13 @@ import Image from "next/image";
 import RegistrationForm from "./RegistrationForm";
 import banner from "@/public/banner.jpg";
 
-export default function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ payment?: string }>;
+}) {
+  const { payment } = await searchParams;
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-6 sm:py-10">
       {/* Top bar */}
@@ -30,6 +36,14 @@ export default function Home() {
         Shotgun start · 4-person teams. Entry and sponsorship directly support
         Gaelic games in County Longford.
       </p>
+
+      {payment === "cancelled" && (
+        <div className="mb-8 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">
+          <span className="font-semibold">Payment cancelled.</span> Your details
+          are still here — check them over and submit again, or choose bank
+          transfer instead.
+        </div>
+      )}
 
       <RegistrationForm />
     </main>

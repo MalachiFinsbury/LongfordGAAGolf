@@ -1,0 +1,29 @@
+#!/bin/sh
+# Blocks commits containing Stripe API keys.
+#
+# Key exposure in source control is the leading cause of Stripe account
+# takeovers. Live keys are always fatal; test keys are flagged too, because a
+# committed test key is usually a sign the same pattern will reach production.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# shellcheck disable=SC2016
+if git diff --cached -U0 -- $staged | grep -nE '^\+.*\b[sr]k_live_[A-Za-z0-9]{8,}'; then
+  echo ""
+  echo "BLOCKED: a LIVE Stripe key appears in the staged changes."
+  echo "Remove it, then roll the key at https://dashboard.stripe.com/apikeys"
+  exit 1
+fi
+
+if git diff --cached -U0 -- $staged | grep -nE '^\+.*\b[sr]k_test_[A-Za-z0-9]{8,}'; then
+  echo ""
+  echo "BLOCKED: a Stripe TEST key appears in the staged changes."
+  echo "Keys belong in .env.local (gitignored) or the Vercel dashboard."
+  echo "If this is genuinely intentional, commit with --no-verify."
+  exit 1
+fi
+
+exit 0

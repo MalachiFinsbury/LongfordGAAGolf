@@ -5,8 +5,20 @@
 export const SESSION_COOKIE = "lgc_admin_session";
 const SESSION_VALUE = "authenticated";
 
+/**
+ * Fails closed on purpose. The previous fallback to a constant string meant
+ * that any environment missing this variable signed cookies with a value
+ * published in this repository — forgeable by anyone who read it.
+ */
 function getSecret(): string {
-  return process.env.ADMIN_SESSION_SECRET || "insecure-dev-secret";
+  const secret = process.env.ADMIN_SESSION_SECRET;
+  if (!secret || secret.length < 16) {
+    throw new Error(
+      "ADMIN_SESSION_SECRET is missing or too short (needs 16+ characters). " +
+        "Refusing to sign admin sessions with a guessable key."
+    );
+  }
+  return secret;
 }
 
 function toHex(buffer: ArrayBuffer): string {
@@ -50,9 +62,38 @@ export async function verifySessionToken(
   return mismatch === 0;
 }
 
-/** Check submitted credentials against the hardcoded env values. */
+/** Length-independent comparison, so a wrong guess leaks nothing via timing. */
+function safeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  let mismatch = ab.length ^ bb.length;
+  const max = Math.max(ab.length, bb.length);
+  for (let i = 0; i < max; i++) {
+    mismatch |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Check submitted credentials against the configured values.
+ *
+ * Fails closed: an unset ADMIN_PASSWORD used to default to the empty string,
+ * which meant username "admin" plus a blank password unlocked every
+ * registrant's name, email, phone and address.
+ */
 export function checkCredentials(username: string, password: string): boolean {
-  const expectedUser = process.env.ADMIN_USERNAME || "admin";
-  const expectedPass = process.env.ADMIN_PASSWORD || "";
-  return username === expectedUser && password === expectedPass;
+  const expectedUser = process.env.ADMIN_USERNAME;
+  const expectedPass = process.env.ADMIN_PASSWORD;
+
+  if (!expectedUser || !expectedPass) {
+    console.error("[auth] ADMIN_USERNAME or ADMIN_PASSWORD is not set — denying all logins.");
+    return false;
+  }
+
+  // Both compared unconditionally so the response time doesn't reveal which
+  // half was wrong.
+  const userOk = safeEqual(username, expectedUser);
+  const passOk = safeEqual(password, expectedPass);
+  return userOk && passOk;
 }

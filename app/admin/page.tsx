@@ -1,4 +1,7 @@
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { getAdminClient } from "@/lib/supabase";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 import { formatEuro, type Registration } from "@/lib/types";
 import { logout } from "@/app/actions";
 
@@ -15,6 +18,14 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 export default async function AdminPage() {
+  // Belt and braces. proxy.ts already gates /admin/*, but this page reads every
+  // registrant's contact details with the service-role key — too sensitive to
+  // depend on a matcher config staying correct.
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!(await verifySessionToken(token))) {
+    redirect("/admin/login");
+  }
+
   let registrations: Registration[] = [];
   let loadError: string | null = null;
 
@@ -33,6 +44,15 @@ export default async function AdminPage() {
   const totalTeams = registrations.reduce((s, r) => s + (r.number_of_teams || 0), 0);
   const totalRevenue = registrations.reduce((s, r) => s + Number(r.total_amount || 0), 0);
   const raffleCount = registrations.filter((r) => r.sponsor_raffle).length;
+
+  // Only the webhook sets payment_status = 'paid', so "collected" reflects
+  // money Stripe has actually confirmed — not what people said they'd pay.
+  const collected = registrations
+    .filter((r) => r.payment_status === "paid")
+    .reduce((s, r) => s + Number(r.amount_paid || 0), 0);
+  const outstanding = registrations
+    .filter((r) => r.payment_status !== "paid")
+    .reduce((s, r) => s + Number(r.total_amount || 0), 0);
 
   return (
     <main className="mx-auto w-full max-w-5xl px-4 py-8">
@@ -63,12 +83,17 @@ export default async function AdminPage() {
         </div>
       ) : (
         <>
-          <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <StatCard label="Registrations" value={String(registrations.length)} />
             <StatCard label="Teams" value={String(totalTeams)} />
             <StatCard label="Raffle prizes" value={String(raffleCount)} />
-            <StatCard label="Total value" value={formatEuro(totalRevenue)} />
+            <StatCard label="Collected" value={formatEuro(collected)} />
+            <StatCard label="Outstanding" value={formatEuro(outstanding)} />
           </div>
+          <p className="-mt-6 mb-8 text-xs text-gray-400">
+            Total pledged {formatEuro(totalRevenue)}. &ldquo;Collected&rdquo; counts
+            only payments Stripe has confirmed.
+          </p>
 
           {registrations.length === 0 ? (
             <div className="rounded-xl bg-white p-10 text-center text-gray-500 shadow-sm ring-1 ring-black/5">
@@ -84,6 +109,38 @@ export default async function AdminPage() {
         </>
       )}
     </main>
+  );
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  card: "Card",
+  invoice: "Invoice",
+  transfer: "Bank transfer",
+};
+
+function PaymentBadge({ r }: { r: Registration }) {
+  const method = METHOD_LABEL[r.payment_method] ?? r.payment_method;
+
+  const tone =
+    r.payment_status === "paid"
+      ? "bg-green-100 text-green-800 ring-green-200"
+      : r.payment_status === "failed"
+        ? "bg-red-100 text-red-800 ring-red-200"
+        : "bg-amber-100 text-amber-800 ring-amber-200";
+
+  const label =
+    r.payment_status === "paid"
+      ? `Paid · ${method}`
+      : r.payment_status === "failed"
+        ? `Payment failed · ${method}`
+        : `Awaiting payment · ${method}`;
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${tone}`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -105,7 +162,10 @@ function RegistrationCard({ r }: { r: Registration }) {
         </div>
         <div className="text-right">
           <p className="text-lg font-bold text-gaa-green">{formatEuro(Number(r.total_amount))}</p>
-          <p className="text-xs text-gray-400">{date}</p>
+          <div className="mt-1 flex items-center justify-end gap-2">
+            <PaymentBadge r={r} />
+          </div>
+          <p className="mt-1 text-xs text-gray-400">{date}</p>
         </div>
       </div>
 
@@ -155,6 +215,25 @@ function RegistrationCard({ r }: { r: Registration }) {
             <p>
               <span className="font-medium text-gray-500">Raffle prize: </span>
               <span className="text-gray-800">{r.raffle_prize || "Yes (unspecified)"}</span>
+            </p>
+          )}
+          {r.stripe_invoice_url && (
+            <p>
+              <span className="font-medium text-gray-500">Invoice: </span>
+              <a
+                href={r.stripe_invoice_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-gaa-green hover:underline"
+              >
+                {r.stripe_invoice_number ?? "View invoice"}
+              </a>
+            </p>
+          )}
+          {r.payment_status === "paid" && Number(r.amount_paid) > 0 && (
+            <p>
+              <span className="font-medium text-gray-500">Paid: </span>
+              <span className="text-gray-800">{formatEuro(Number(r.amount_paid))}</span>
             </p>
           )}
         </div>

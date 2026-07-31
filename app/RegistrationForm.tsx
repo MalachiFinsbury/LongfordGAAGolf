@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { submitRegistration, type SubmitState } from "./actions";
 import {
@@ -9,9 +9,43 @@ import {
   PRICE_PER_TEAM,
   PRICE_PER_TEE_BOX,
   PRICE_PER_GREEN,
+  MAX_TEE_BOXES,
+  MAX_GREENS,
+  MAX_DONATION,
+  REGISTRATION_DRAFT_KEY,
   calculateTotal,
   formatEuro,
+  type PaymentMethod,
 } from "@/lib/types";
+
+/**
+ * Where the half-filled form lives while the payer is off at Stripe.
+ *
+ * sessionStorage, not localStorage: this holds names, emails and phone
+ * numbers, and it should not outlive the tab — particularly on a shared
+ * clubhouse computer.
+ */
+const DRAFT_KEY = REGISTRATION_DRAFT_KEY;
+
+/** Inputs React owns; restored from state, not by writing to the DOM. */
+const CONTROLLED_FIELDS = new Set([
+  "number_of_teams",
+  "tee_box_count",
+  "green_count",
+  "donation_amount",
+  "sponsor_raffle",
+  "payment_method",
+]);
+
+type Draft = {
+  numTeams: number;
+  teeBox: number;
+  green: number;
+  donation: number;
+  sponsorRaffle: boolean;
+  payMethod: PaymentMethod;
+  fields: Record<string, string>;
+};
 
 const inputClass =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm outline-none transition focus:border-gaa-green focus:ring-2 focus:ring-gaa-green/30";
@@ -47,7 +81,13 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SubmitButton() {
+const SUBMIT_LABEL: Record<PaymentMethod, string> = {
+  card: "Continue to secure payment",
+  invoice: "Submit & email me an invoice",
+  transfer: "Submit registration",
+};
+
+function SubmitButton({ method }: { method: PaymentMethod }) {
   const { pending } = useFormStatus();
   return (
     <button
@@ -55,8 +95,50 @@ function SubmitButton() {
       disabled={pending}
       className="w-full rounded-lg bg-gaa-green px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-gaa-green-dark disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {pending ? "Submitting…" : "Submit Registration"}
+      {pending ? "Submitting…" : SUBMIT_LABEL[method]}
     </button>
+  );
+}
+
+function PaymentOption({
+  value,
+  selected,
+  onSelect,
+  title,
+  blurb,
+  icon,
+}: {
+  value: PaymentMethod;
+  selected: PaymentMethod;
+  onSelect: (m: PaymentMethod) => void;
+  title: string;
+  blurb: string;
+  icon: string;
+}) {
+  const isSelected = selected === value;
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${
+        isSelected
+          ? "border-gaa-green bg-gaa-green/5 ring-2 ring-gaa-green/30"
+          : "border-gray-200 bg-white hover:border-gaa-green/40"
+      }`}
+    >
+      <input
+        type="radio"
+        name="payment_method"
+        value={value}
+        checked={isSelected}
+        onChange={() => onSelect(value)}
+        className="mt-1 h-4 w-4 shrink-0 text-gaa-green focus:ring-gaa-green"
+      />
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-gray-900">
+          {icon} {title}
+        </span>
+        <span className="mt-0.5 block text-xs text-gray-500">{blurb}</span>
+      </span>
+    </label>
   );
 }
 
@@ -69,6 +151,84 @@ export default function RegistrationForm() {
   const [green, setGreen] = useState(0);
   const [donation, setDonation] = useState(0);
   const [sponsorRaffle, setSponsorRaffle] = useState(false);
+  const [payMethod, setPayMethod] = useState<PaymentMethod>("card");
+
+  const formRef = useRef<HTMLFormElement>(null);
+  // Text values waiting to be written back once the matching inputs exist.
+  const pendingFields = useRef<Record<string, string> | null>(null);
+  const [draftLoaded, setDraftLoaded] = useState(false);
+
+  // Restore the controlled values first — numTeams decides how many player
+  // blocks get rendered, and those inputs have to exist before we can fill them.
+  //
+  /* eslint-disable react-hooks/set-state-in-effect --
+     sessionStorage has no server-side equivalent, so seeding these through
+     useState initialisers would make the client's first render disagree with
+     the server HTML. Restoring after hydration is the intended way to sync
+     with an external browser store. */
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw) as Draft;
+        if (draft.numTeams) setNumTeams(draft.numTeams);
+        if (draft.teeBox) setTeeBox(draft.teeBox);
+        if (draft.green) setGreen(draft.green);
+        if (draft.donation) setDonation(draft.donation);
+        if (draft.sponsorRaffle) setSponsorRaffle(true);
+        if (draft.payMethod) setPayMethod(draft.payMethod);
+        pendingFields.current = draft.fields ?? null;
+      }
+    } catch {
+      sessionStorage.removeItem(DRAFT_KEY);
+    }
+    setDraftLoaded(true);
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Second pass: the player rows are on the page now, so put the text back.
+  useEffect(() => {
+    if (!draftLoaded || !pendingFields.current || !formRef.current) return;
+    for (const [name, value] of Object.entries(pendingFields.current)) {
+      if (CONTROLLED_FIELDS.has(name)) continue;
+      const field = formRef.current.elements.namedItem(name);
+      if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+        field.value = value;
+      }
+    }
+    pendingFields.current = null;
+  }, [draftLoaded, numTeams, sponsorRaffle]);
+
+  // Once the entry is in, the draft has served its purpose. Leaving it would
+  // pre-fill the form with someone else's details for the next person.
+  useEffect(() => {
+    if (state.ok) sessionStorage.removeItem(DRAFT_KEY);
+  }, [state.ok]);
+
+  const saveDraft = useCallback(() => {
+    if (!formRef.current) return;
+    const fields: Record<string, string> = {};
+    for (const [key, value] of new FormData(formRef.current).entries()) {
+      if (typeof value === "string") fields[key] = value;
+    }
+    try {
+      sessionStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({
+          numTeams, teeBox, green, donation, sponsorRaffle, payMethod, fields,
+        } satisfies Draft)
+      );
+    } catch {
+      // Private browsing or a full quota — losing the draft is not worth
+      // breaking the form over.
+    }
+  }, [numTeams, teeBox, green, donation, sponsorRaffle, payMethod]);
+
+  // The state above changes a tick after the input event that caused it, so
+  // re-save whenever it settles rather than only on change.
+  useEffect(() => {
+    if (draftLoaded) saveDraft();
+  }, [draftLoaded, saveDraft]);
 
   const total = useMemo(
     () =>
@@ -81,40 +241,20 @@ export default function RegistrationForm() {
     [numTeams, teeBox, green, donation]
   );
 
+  // The card path never reaches here — that submit redirects to Stripe.
   if (state.ok) {
     return (
-      <div className="space-y-6">
-        <div className="rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gaa-green/10 text-3xl">
-            ✅
-          </div>
-          <h2 className="text-2xl font-bold text-gaa-green-dark">Thank you!</h2>
-          <p className="mt-2 text-gray-600">
-            Your registration for the Longford GAA Golf Classic 2026 has been
-            received. We&apos;ll be in touch about tee times.
-          </p>
-        </div>
-
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h3 className="text-lg font-bold text-gaa-green-dark">
-            Payment by bank transfer
-          </h3>
-          <p className="mt-1 text-sm text-gray-600">
-            To complete your entry, please transfer the total amount due to the
-            account below. Use your name as the payment reference.
-          </p>
-          <div className="mt-4 space-y-2">
-            <CopyValue label="Account name" value="Longford County Board GAA" />
-            <CopyValue label="IBAN" value="IE31IPBS99073152079039" />
-            <CopyValue label="BIC" value="IPBSIE2D" />
-          </div>
-        </div>
-      </div>
+      <Confirmation method={state.method ?? "transfer"} invoiceUrl={state.invoiceUrl} />
     );
   }
 
   return (
-    <form action={formAction} className="space-y-8">
+    <form
+      ref={formRef}
+      action={formAction}
+      onChange={saveDraft}
+      className="space-y-8"
+    >
       {/* Your details */}
       <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
         <h2 className="mb-4 text-lg font-bold text-gaa-green-dark">Your details</h2>
@@ -246,35 +386,39 @@ export default function RegistrationForm() {
             <label className={labelClass} htmlFor="tee_box_count">
               Tee box sponsorship
             </label>
-            <input
+            <select
               id="tee_box_count"
               name="tee_box_count"
-              type="number"
-              min={0}
-              value={teeBox || ""}
-              onChange={(e) => setTeeBox(Number(e.target.value) || 0)}
+              value={teeBox}
+              onChange={(e) => setTeeBox(Number(e.target.value))}
               className={inputClass}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              {formatEuro(PRICE_PER_TEE_BOX)} each
-            </p>
+            >
+              <option value={0}>None</option>
+              {Array.from({ length: MAX_TEE_BOXES }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n} × {formatEuro(PRICE_PER_TEE_BOX)}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className={labelClass} htmlFor="green_count">
               Green sponsorship
             </label>
-            <input
+            <select
               id="green_count"
               name="green_count"
-              type="number"
-              min={0}
-              value={green || ""}
-              onChange={(e) => setGreen(Number(e.target.value) || 0)}
+              value={green}
+              onChange={(e) => setGreen(Number(e.target.value))}
               className={inputClass}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              {formatEuro(PRICE_PER_GREEN)} each
-            </p>
+            >
+              <option value={0}>None</option>
+              {Array.from({ length: MAX_GREENS }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n} × {formatEuro(PRICE_PER_GREEN)}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className={labelClass} htmlFor="donation_amount">
@@ -285,9 +429,12 @@ export default function RegistrationForm() {
               name="donation_amount"
               type="number"
               min={0}
+              max={MAX_DONATION}
               step="0.01"
               value={donation || ""}
-              onChange={(e) => setDonation(Number(e.target.value) || 0)}
+              onChange={(e) =>
+                setDonation(Math.min(Number(e.target.value) || 0, MAX_DONATION))
+              }
               className={inputClass}
             />
           </div>
@@ -332,13 +479,106 @@ export default function RegistrationForm() {
         </div>
       </section>
 
+      {/* Payment */}
+      <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <h2 className="mb-4 text-lg font-bold text-gaa-green-dark">
+          How would you like to pay?
+        </h2>
+        <div className="space-y-3">
+          <PaymentOption
+            value="card"
+            selected={payMethod}
+            onSelect={setPayMethod}
+            icon="💳"
+            title="Pay now by card"
+            blurb="Secure Stripe checkout. Instant confirmation and an emailed receipt."
+          />
+          <PaymentOption
+            value="invoice"
+            selected={payMethod}
+            onSelect={setPayMethod}
+            icon="🧾"
+            title="Send me an invoice"
+            blurb="We'll email a formal invoice, payable within 30 days by card or bank transfer. Best if a company is sponsoring."
+          />
+          <PaymentOption
+            value="transfer"
+            selected={payMethod}
+            onSelect={setPayMethod}
+            icon="🏦"
+            title="Bank transfer"
+            blurb="We'll show you the club's account details to pay manually."
+          />
+        </div>
+      </section>
+
       {state.error && (
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
           {state.error}
         </p>
       )}
 
-      <SubmitButton />
+      <SubmitButton method={payMethod} />
     </form>
+  );
+}
+
+function Confirmation({
+  method,
+  invoiceUrl,
+}: {
+  method: PaymentMethod;
+  invoiceUrl?: string;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gaa-green/10 text-3xl">
+          ✅
+        </div>
+        <h2 className="text-2xl font-bold text-gaa-green-dark">Thank you!</h2>
+        <p className="mt-2 text-gray-600">
+          Your registration for the Longford GAA Golf Classic 2026 has been
+          received. We&apos;ll be in touch about tee times.
+        </p>
+      </div>
+
+      {method === "invoice" ? (
+        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+          <h3 className="text-lg font-bold text-gaa-green-dark">
+            Your invoice is on its way
+          </h3>
+          <p className="mt-1 text-sm text-gray-600">
+            We&apos;ve emailed a formal invoice, payable within 30 days. You can
+            settle it by card or bank transfer from the link in that email.
+          </p>
+          {invoiceUrl && (
+            <a
+              href={invoiceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-4 inline-block rounded-lg bg-gaa-green px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-gaa-green-dark"
+            >
+              View and pay your invoice
+            </a>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+          <h3 className="text-lg font-bold text-gaa-green-dark">
+            Payment by bank transfer
+          </h3>
+          <p className="mt-1 text-sm text-gray-600">
+            To complete your entry, please transfer the total amount due to the
+            account below. Use your name as the payment reference.
+          </p>
+          <div className="mt-4 space-y-2">
+            <CopyValue label="Account name" value="Longford County Board GAA" />
+            <CopyValue label="IBAN" value="IE31IPBS99073152079039" />
+            <CopyValue label="BIC" value="IPBSIE2D" />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

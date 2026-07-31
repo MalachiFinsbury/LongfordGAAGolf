@@ -27,6 +27,9 @@ create table if not exists public.registrations (
   total_amount       numeric not null default 0
 );
 
+-- NOTE: the payment columns live in supabase/migrations/. Apply them with
+-- `supabase db push`, or paste the migration into the SQL Editor by hand.
+
 -- Row Level Security: allow anonymous inserts (public form), block public reads.
 -- The admin dashboard reads via the service-role key, which bypasses RLS.
 alter table public.registrations enable row level security;
