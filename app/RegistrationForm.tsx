@@ -13,8 +13,11 @@ import {
   MAX_GREENS,
   MAX_DONATION,
   REGISTRATION_DRAFT_KEY,
+  INVOICE_PAYMENT_ENABLED,
+  CLUB_BANK,
   calculateTotal,
   formatEuro,
+  isOfferedPaymentMethod,
   type PaymentMethod,
 } from "@/lib/types";
 
@@ -171,12 +174,20 @@ export default function RegistrationForm() {
       const raw = sessionStorage.getItem(DRAFT_KEY);
       if (raw) {
         const draft = JSON.parse(raw) as Draft;
-        if (draft.numTeams) setNumTeams(draft.numTeams);
+        // Checked for presence, not truthiness: "no team — sponsorship only"
+        // is stored as 0, and a falsy test would silently reinstate the
+        // default of one team when the payer came back from Stripe.
+        if (typeof draft.numTeams === "number") setNumTeams(draft.numTeams);
         if (draft.teeBox) setTeeBox(draft.teeBox);
         if (draft.green) setGreen(draft.green);
         if (draft.donation) setDonation(draft.donation);
         if (draft.sponsorRaffle) setSponsorRaffle(true);
-        if (draft.payMethod) setPayMethod(draft.payMethod);
+        // A draft saved while a method was still on offer must not reinstate
+        // it after it has been withdrawn — that would leave no radio selected
+        // and the submit button labelled for a route the payer cannot take.
+        if (draft.payMethod && isOfferedPaymentMethod(draft.payMethod)) {
+          setPayMethod(draft.payMethod);
+        }
         pendingFields.current = draft.fields ?? null;
       }
     } catch {
@@ -319,6 +330,10 @@ export default function RegistrationForm() {
             onChange={(e) => setNumTeams(Number(e.target.value))}
             className={inputClass}
           >
+            {/* Zero is a real answer. A tee-box sponsor, a donor, or someone
+                offering only a raffle prize had no way through this form
+                without buying a team entry they did not want. */}
+            <option value={0}>No team — sponsorship or donation only</option>
             {Array.from({ length: MAX_TEAMS }, (_, i) => i + 1).map((n) => (
               <option key={n} value={n}>
                 {n} team{n > 1 ? "s" : ""} — {formatEuro(n * PRICE_PER_TEAM)}
@@ -493,14 +508,16 @@ export default function RegistrationForm() {
             title="Pay now by card"
             blurb="Secure Stripe checkout. Instant confirmation and an emailed receipt."
           />
-          <PaymentOption
-            value="invoice"
-            selected={payMethod}
-            onSelect={setPayMethod}
-            icon="🧾"
-            title="Send me an invoice"
-            blurb="We'll email a formal invoice, payable within 30 days by card or bank transfer. Best if a company is sponsoring."
-          />
+          {INVOICE_PAYMENT_ENABLED && (
+            <PaymentOption
+              value="invoice"
+              selected={payMethod}
+              onSelect={setPayMethod}
+              icon="🧾"
+              title="Send me an invoice"
+              blurb="We'll email a formal invoice, payable within 30 days. Best if a company is sponsoring."
+            />
+          )}
           <PaymentOption
             value="transfer"
             selected={payMethod}
@@ -543,14 +560,14 @@ function Confirmation({
         </p>
       </div>
 
-      {method === "invoice" ? (
+      {method === "invoice" && (
         <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
           <h3 className="text-lg font-bold text-gaa-green-dark">
             Your invoice is on its way
           </h3>
           <p className="mt-1 text-sm text-gray-600">
             We&apos;ve emailed a formal invoice, payable within 30 days. You can
-            settle it by card or bank transfer from the link in that email.
+            settle it by card from the link in that email.
           </p>
           {invoiceUrl && (
             <a
@@ -563,22 +580,28 @@ function Confirmation({
             </a>
           )}
         </div>
-      ) : (
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h3 className="text-lg font-bold text-gaa-green-dark">
-            Payment by bank transfer
-          </h3>
-          <p className="mt-1 text-sm text-gray-600">
-            To complete your entry, please transfer the total amount due to the
-            account below. Use your name as the payment reference.
-          </p>
-          <div className="mt-4 space-y-2">
-            <CopyValue label="Account name" value="Longford County Board GAA" />
-            <CopyValue label="IBAN" value="IE31IPBS99073152079039" />
-            <CopyValue label="BIC" value="IPBSIE2D" />
-          </div>
-        </div>
       )}
+
+      {/* Shown on both paths. The hosted invoice page only offers card, so an
+          invoiced company that would rather pay by transfer needs these details
+          here instead of being told to look for them in the email. */}
+      <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <h3 className="text-lg font-bold text-gaa-green-dark">
+          {method === "invoice"
+            ? "Prefer to pay by bank transfer?"
+            : "Payment by bank transfer"}
+        </h3>
+        <p className="mt-1 text-sm text-gray-600">
+          {method === "invoice"
+            ? "Transfer the invoiced amount to the account below instead, quoting your invoice number as the reference."
+            : "To complete your entry, please transfer the total amount due to the account below. Use your name as the payment reference."}
+        </p>
+        <div className="mt-4 space-y-2">
+          <CopyValue label="Account name" value={CLUB_BANK.accountName} />
+          <CopyValue label="IBAN" value={CLUB_BANK.iban} />
+          <CopyValue label="BIC" value={CLUB_BANK.bic} />
+        </div>
+      </div>
     </div>
   );
 }

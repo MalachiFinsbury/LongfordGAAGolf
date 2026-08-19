@@ -5,6 +5,7 @@ import { cookies, headers } from "next/headers";
 import { getPublicClient, getAdminClient } from "@/lib/supabase";
 import {
   SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
   checkCredentials,
   createSessionToken,
 } from "@/lib/auth";
@@ -15,13 +16,14 @@ import {
   MAX_DONATION,
   PLAYERS_PER_TEAM,
   calculateTotal,
-  isPaymentMethod,
+  isOfferedPaymentMethod,
   type PaymentMethod,
   type Team,
 } from "@/lib/types";
 import { buildOrderLines } from "@/lib/pricing";
 import { createAndSendInvoice, createCheckoutSession } from "@/lib/payments";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { sendTransferInstructions } from "@/lib/email";
 
 export type SubmitState = {
   ok: boolean;
@@ -113,18 +115,6 @@ export async function submitRegistration(
   _prev: SubmitState,
   formData: FormData
 ): Promise<SubmitState> {
-  // This endpoint is public and, on the invoice path, makes Stripe send email
-  // to an address the caller chose. Bound it before doing any work.
-  const { allowed } = await checkRateLimit("registration");
-  if (!allowed) {
-    return {
-      ok: false,
-      error:
-        "Too many registrations from this connection. Please wait a little " +
-        "and try again, or contact the organisers directly.",
-    };
-  }
-
   const name = str(formData.get("name"));
   const mobile = str(formData.get("mobile"), 40);
   const email = str(formData.get("email"), 254);
@@ -171,7 +161,12 @@ export async function submitRegistration(
   const raffle_prize = sponsor_raffle ? str(formData.get("raffle_prize"), 1000) : "";
 
   const rawMethod = str(formData.get("payment_method"));
-  const payment_method: PaymentMethod = isPaymentMethod(rawMethod) ? rawMethod : "transfer";
+  // Anything not currently on offer falls back to bank transfer instead of
+  // being taken at face value — that covers junk as before, and now also
+  // "invoice" arriving from a form that no longer shows it.
+  const payment_method: PaymentMethod = isOfferedPaymentMethod(rawMethod)
+    ? rawMethod
+    : "transfer";
 
   const address = str(formData.get("address")) || null;
   const total_amount = calculateTotal({
@@ -213,6 +208,22 @@ export async function submitRegistration(
     total_amount,
     payment_method,
   };
+
+  // Charged here rather than on entry. This endpoint is public and, on the
+  // invoice path, makes Stripe email an address the caller chose, so it does
+  // need a budget — but spending that budget on submissions that never got
+  // past validation meant someone mistyping their email four times, then
+  // fumbling the captain's name, could lock themselves out for an hour. A
+  // whole clubhouse shares one NAT address, so that lockout is not personal.
+  const { allowed } = await checkRateLimit("registration");
+  if (!allowed) {
+    return {
+      ok: false,
+      error:
+        "Too many registrations from this connection. Please wait a little " +
+        "and try again, or contact the organisers directly.",
+    };
+  }
 
   // If this browser abandoned a card checkout and came back, update that same
   // row rather than leaving a trail of duplicate "awaiting payment" entries in
@@ -319,6 +330,17 @@ export async function submitRegistration(
   }
 
   await forgetDraft();
+
+  // Awaited, not fired and forgotten: a serverless function can be frozen the
+  // instant its response is returned, which would cut an in-flight send off
+  // mid-request. sendTransferInstructions swallows its own failures, so this
+  // cannot turn a saved registration into an error.
+  //
+  // Until now this branch was the one path that told the payer nothing — they
+  // got an IBAN on a screen they could close, and the organisers got no
+  // notification at all.
+  await sendTransferInstructions({ id: registrationId, ...entry });
+
   return { ok: true, method: "transfer" };
 }
 
@@ -349,7 +371,9 @@ export async function login(
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 8, // 8 hours
+    // Same TTL the token carries, so the cookie and the signature stop being
+    // accepted at the same moment.
+    maxAge: SESSION_TTL_SECONDS,
   });
 
   redirect("/admin");
