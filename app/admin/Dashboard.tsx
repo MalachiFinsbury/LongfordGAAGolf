@@ -43,13 +43,14 @@ const STATUS_LABEL: Record<string, string> = {
   paid: "Paid",
   pending: "Awaiting payment",
   failed: "Payment failed",
+  expired: "Checkout abandoned",
 };
 
 /* ------------------------------------------------------------------ *
  * Derived data
  * ------------------------------------------------------------------ */
 
-type StatusFilter = "all" | "paid" | "pending" | "failed";
+type StatusFilter = "all" | "paid" | "pending" | "failed" | "expired";
 type MethodFilter = "all" | "card" | "invoice" | "transfer";
 type SortKey = "newest" | "oldest" | "amount-desc" | "amount-asc" | "name";
 type View = "cards" | "table" | "players";
@@ -91,8 +92,17 @@ function haystack(r: Registration): string {
     .toLowerCase();
 }
 
+/**
+ * Excel and Sheets execute a cell that begins with =, +, - or @. The raffle
+ * prize box, the name and the company field are free text typed by the public,
+ * so an export opened on an organiser's laptop is a code path that starts at a
+ * stranger's keyboard. A leading apostrophe makes the cell inert while still
+ * displaying the original text. Genuine numbers are exempt so amounts stay
+ * numeric in the spreadsheet.
+ */
 function csvCell(value: unknown): string {
-  const s = value === null || value === undefined ? "" : String(value);
+  let s = value === null || value === undefined ? "" : String(value);
+  if (typeof value !== "number" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -229,13 +239,17 @@ function StatusBadge({ r, compact = false }: { r: Registration; compact?: boolea
       ? "bg-green-100 text-green-800 ring-green-200"
       : r.payment_status === "failed"
         ? "bg-red-100 text-red-800 ring-red-200"
-        : "bg-amber-100 text-amber-800 ring-amber-200";
+        : r.payment_status === "expired"
+          ? "bg-gray-100 text-gray-600 ring-gray-200"
+          : "bg-amber-100 text-amber-800 ring-amber-200";
   const dot =
     r.payment_status === "paid"
       ? "bg-green-600"
       : r.payment_status === "failed"
         ? "bg-red-600"
-        : "bg-amber-500";
+        : r.payment_status === "expired"
+          ? "bg-gray-400"
+          : "bg-amber-500";
 
   return (
     <span
@@ -784,6 +798,7 @@ export default function Dashboard({ registrations }: { registrations: Registrati
       paid: preStatus.filter((r) => r.payment_status === "paid").length,
       pending: preStatus.filter((r) => r.payment_status === "pending").length,
       failed: preStatus.filter((r) => r.payment_status === "failed").length,
+      expired: preStatus.filter((r) => r.payment_status === "expired").length,
     }),
     [preStatus]
   );
@@ -821,8 +836,10 @@ export default function Dashboard({ registrations }: { registrations: Registrati
     const collected = filtered
       .filter((r) => r.payment_status === "paid")
       .reduce((s, r) => s + Number(r.amount_paid || 0), 0);
+    // Abandoned checkouts are nobody's debt — counting them would inflate the
+    // figure the organisers treat as their chase-up list.
     const outstanding = filtered
-      .filter((r) => r.payment_status !== "paid")
+      .filter((r) => r.payment_status !== "paid" && r.payment_status !== "expired")
       .reduce((s, r) => s + Number(r.total_amount || 0), 0);
     return {
       teams,
@@ -1035,6 +1052,7 @@ export default function Dashboard({ registrations }: { registrations: Registrati
               ["paid", "Paid"],
               ["pending", "Awaiting"],
               ["failed", "Failed"],
+              ["expired", "Abandoned"],
             ] as Array<[StatusFilter, string]>
           ).map(([key, label]) => (
             <button

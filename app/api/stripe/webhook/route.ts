@@ -1,6 +1,8 @@
 import type Stripe from "stripe";
 import { getStripe } from "@/lib/stripe";
 import { getAdminClient } from "@/lib/supabase";
+import { sendPaidConfirmation } from "@/lib/email";
+import type { Registration } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -113,6 +115,15 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       return;
     }
 
+    case "checkout.session.expired": {
+      const session = event.data.object;
+      await markExpired(
+        session.metadata?.registration_id ?? session.client_reference_id,
+        session.id
+      );
+      return;
+    }
+
     case "invoice.paid": {
       const invoice = event.data.object;
       await markPaid(invoice.metadata?.registration_id, {
@@ -170,6 +181,71 @@ async function markPaid(
       paid_at: new Date().toISOString(),
     })
     .eq("id", registrationId);
+
+  if (error) throw new Error(`Supabase update failed: ${error.message}`);
+
+  await sendPaidConfirmationOnce(registrationId);
+}
+
+/**
+ * Emails the payer their confirmation, at most once per registration.
+ *
+ * A card checkout with `invoice_creation` enabled produces *two* paid events —
+ * `checkout.session.completed` and `invoice.paid` — and both legitimately land
+ * here. The `stripe_events` ledger dedupes redeliveries of the *same* event but
+ * cannot help across two different ones, so the claim is made in Postgres: the
+ * `is null` predicate means exactly one caller gets a row back, whichever
+ * arrives first, even if they arrive together.
+ */
+async function sendPaidConfirmationOnce(registrationId: string): Promise<void> {
+  const { data, error } = await getAdminClient()
+    .from("registrations")
+    .update({ paid_confirmation_sent_at: new Date().toISOString() })
+    .eq("id", registrationId)
+    .is("paid_confirmation_sent_at", null)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    // Not fatal. The payment is recorded, which is the part that matters —
+    // failing here would return 500 and have Stripe retry a settled payment.
+    console.error("[stripe] could not claim confirmation email", error.message);
+    return;
+  }
+  if (!data) return; // Another event already sent it.
+
+  const row = data as Registration;
+  await sendPaidConfirmation(row, Number(row.amount_paid));
+}
+
+/**
+ * A card checkout that was opened and never finished.
+ *
+ * Recorded distinctly from "pending" so the organisers' chase-up list stays a
+ * list of people who actually intend to pay. It is deliberately not "failed":
+ * nothing was declined, the payer simply walked away.
+ */
+async function markExpired(
+  registrationId: string | null | undefined,
+  sessionId: string
+): Promise<void> {
+  if (!registrationId) {
+    console.warn("[stripe] expiry event carried no registration_id — skipping");
+    return;
+  }
+
+  const { error } = await getAdminClient()
+    .from("registrations")
+    .update({ payment_status: "expired" })
+    .eq("id", registrationId)
+    // Every one of these narrows the blast radius of a late-arriving expiry.
+    // A row that already reached a real outcome keeps it; a payer who came
+    // back and started a *new* checkout has a different session id here; and
+    // one who switched to bank transfer still fully intends to pay, so their
+    // row must not be written off when the abandoned card session lapses.
+    .eq("payment_status", "pending")
+    .eq("stripe_checkout_session_id", sessionId)
+    .eq("payment_method", "card");
 
   if (error) throw new Error(`Supabase update failed: ${error.message}`);
 }
