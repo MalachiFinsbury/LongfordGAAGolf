@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 import { getPublicClient, getAdminClient } from "@/lib/supabase";
 import {
@@ -8,6 +9,7 @@ import {
   SESSION_TTL_SECONDS,
   checkCredentials,
   createSessionToken,
+  verifySessionToken,
 } from "@/lib/auth";
 import {
   MAX_TEAMS,
@@ -23,7 +25,8 @@ import {
 import { buildOrderLines } from "@/lib/pricing";
 import { createAndSendInvoice, createCheckoutSession } from "@/lib/payments";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { sendTransferInstructions } from "@/lib/email";
+import { sendPaidConfirmation, sendTransferInstructions } from "@/lib/email";
+import type { Registration } from "@/lib/types";
 
 export type SubmitState = {
   ok: boolean;
@@ -342,6 +345,140 @@ export async function submitRegistration(
   await sendTransferInstructions({ id: registrationId, ...entry });
 
   return { ok: true, method: "transfer" };
+}
+
+/* ------------------------------------------------------------------ *
+ * Recording a payment that never went through Stripe
+ * ------------------------------------------------------------------ */
+
+export type AdminActionState = { ok?: boolean; error?: string };
+
+/**
+ * Bank transfers go straight to the club's own account, so Stripe never sees
+ * them and the app cannot learn they happened. These two actions are how an
+ * organiser reconciling a bank statement tells the app what they can see.
+ *
+ * Checked on the server, not merely hidden in the dashboard: these mutate money
+ * state, and "the button isn't rendered" is not an access control.
+ */
+async function isSignedIn(): Promise<boolean> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  return verifySessionToken(token);
+}
+
+export async function markRegistrationPaid(
+  _prev: AdminActionState,
+  formData: FormData
+): Promise<AdminActionState> {
+  if (!(await isSignedIn())) {
+    return { error: "Your session has expired. Please sign in again." };
+  }
+
+  const id = str(formData.get("registration_id"), 64);
+  if (!UUID_RE.test(id)) {
+    return { error: "That registration could not be identified." };
+  }
+
+  const amount = toNum(formData.get("amount"));
+  if (amount <= 0) {
+    return { error: "Enter the amount that was actually received." };
+  }
+  const note = str(formData.get("note"), 500) || null;
+
+  const supabase = getAdminClient();
+
+  const { data, error } = await supabase
+    .from("registrations")
+    .update({
+      payment_status: "paid",
+      amount_paid: amount,
+      paid_at: new Date().toISOString(),
+      payment_recorded_by: "organiser",
+      payment_note: note,
+    })
+    .eq("id", id)
+    // Stripe's word beats a volunteer's. A payment the webhook already settled
+    // must not have its bank-verified figure replaced by a typed one.
+    .or("payment_recorded_by.is.null,payment_recorded_by.eq.organiser")
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[admin] mark-paid failed", error.message);
+    return { error: "Could not record that payment. Please try again." };
+  }
+  if (!data) {
+    return {
+      error: "Nothing to record — Stripe has already confirmed this payment.",
+    };
+  }
+
+  // Claimed the same way the webhook does, so a double-click cannot send the
+  // payer two confirmations.
+  const { data: claimed } = await supabase
+    .from("registrations")
+    .update({ paid_confirmation_sent_at: new Date().toISOString() })
+    .eq("id", id)
+    .is("paid_confirmation_sent_at", null)
+    .select("*")
+    .maybeSingle();
+
+  if (claimed) {
+    const row = claimed as Registration;
+    // Payer only. The organiser is sitting in the dashboard having just clicked
+    // the button; emailing them about it would be noise.
+    await sendPaidConfirmation(row, Number(row.amount_paid), { notifyOrganisers: false });
+  }
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+export async function revertRegistrationToPending(
+  _prev: AdminActionState,
+  formData: FormData
+): Promise<AdminActionState> {
+  if (!(await isSignedIn())) {
+    return { error: "Your session has expired. Please sign in again." };
+  }
+
+  const id = str(formData.get("registration_id"), 64);
+  if (!UUID_RE.test(id)) {
+    return { error: "That registration could not be identified." };
+  }
+
+  const { data, error } = await supabase_revert(id);
+
+  if (error) {
+    console.error("[admin] revert failed", error.message);
+    return { error: "Could not undo that. Please try again." };
+  }
+  if (!data) {
+    return { error: "Only a payment recorded by an organiser can be undone." };
+  }
+
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+function supabase_revert(id: string) {
+  return getAdminClient()
+    .from("registrations")
+    .update({
+      payment_status: "pending",
+      amount_paid: 0,
+      paid_at: null,
+      payment_recorded_by: null,
+      payment_note: null,
+      // Cleared too, so that correcting a mistake and recording the payment
+      // again still sends the payer their confirmation.
+      paid_confirmation_sent_at: null,
+    })
+    .eq("id", id)
+    // Never unwind something Stripe settled — that money genuinely arrived.
+    .eq("payment_recorded_by", "organiser")
+    .select("id")
+    .maybeSingle();
 }
 
 export type LoginState = { error?: string };

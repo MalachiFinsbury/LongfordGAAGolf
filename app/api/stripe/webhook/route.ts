@@ -179,6 +179,10 @@ async function markPaid(
       ...fields,
       payment_status: "paid",
       paid_at: new Date().toISOString(),
+      // Stamped so the dashboard can tell a settled payment apart from one an
+      // organiser recorded by hand, and so a manual override can refuse to
+      // overwrite this one.
+      payment_recorded_by: "stripe",
     })
     .eq("id", registrationId);
 

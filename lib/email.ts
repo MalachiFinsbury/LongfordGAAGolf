@@ -402,27 +402,42 @@ ${e.sponsor_raffle ? `\nRaffle prize offered: ${e.raffle_prize || "no descriptio
  * Public API
  * ------------------------------------------------------------------ */
 
-/** Card payment confirmed by Stripe: receipt to the payer, alert to organisers. */
+/**
+ * Payment confirmed: receipt to the payer, alert to organisers.
+ *
+ * `notifyOrganisers` exists for the case where an organiser is the one
+ * recording the payment — they are sitting in the dashboard having just
+ * clicked the button, and do not need to be emailed about their own action.
+ */
 export async function sendPaidConfirmation(
   entry: EntrySummary,
-  amountPaid: number
+  amountPaid: number,
+  opts: { notifyOrganisers?: boolean } = {}
 ): Promise<void> {
+  const { notifyOrganisers = true } = opts;
   const payer = payerPaid(entry, amountPaid);
-  const organiser = organiserAlert(entry, true, amountPaid);
+
+  const jobs = [
+    send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
+  ];
+
+  if (notifyOrganisers) {
+    const organiser = organiserAlert(entry, true, amountPaid);
+    jobs.push(
+      send({
+        to: organiserRecipients(),
+        subject: organiser.subject,
+        html: organiser.html,
+        text: organiser.text,
+        // Organisers can answer the registrant straight from the alert.
+        replyTo: entry.email,
+      })
+    );
+  }
 
   // Concurrent, and each already swallows its own failures — one bad organiser
   // address must not cost the payer their confirmation.
-  await Promise.all([
-    send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
-    send({
-      to: organiserRecipients(),
-      subject: organiser.subject,
-      html: organiser.html,
-      text: organiser.text,
-      // Organisers can answer the registrant straight from the alert.
-      replyTo: entry.email,
-    }),
-  ]);
+  await Promise.all(jobs);
 }
 
 /** Bank transfer chosen: payment instructions to the payer, alert to organisers. */

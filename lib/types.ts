@@ -93,6 +93,15 @@ export type Registration = {
   paid_at: string | null;
   /** Set once, atomically, so two Stripe events can't both email a receipt. */
   paid_confirmation_sent_at: string | null;
+  /**
+   * Who established that the money arrived. "stripe" means the webhook saw it
+   * settle; "organiser" means a volunteer matched it against a bank statement
+   * by hand. Kept apart so the dashboard never presents a typed-in figure with
+   * the same authority as a confirmed one.
+   */
+  payment_recorded_by: "stripe" | "organiser" | null;
+  /** Free text from whoever recorded it — a bank reference, a date seen. */
+  payment_note: string | null;
   stripe_customer_id: string | null;
   stripe_checkout_session_id: string | null;
   stripe_payment_intent_id: string | null;

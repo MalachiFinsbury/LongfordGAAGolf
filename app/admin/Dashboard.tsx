@@ -1,8 +1,22 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  Fragment,
+  useActionState,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { logout } from "@/app/actions";
+import {
+  logout,
+  markRegistrationPaid,
+  revertRegistrationToPending,
+  type AdminActionState,
+} from "@/app/actions";
 import {
   formatEuro,
   PLAYERS_PER_TEAM,
@@ -346,6 +360,124 @@ function Breakdown({ r }: { r: Registration }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ * Recording a payment Stripe never saw
+ * ------------------------------------------------------------------ */
+
+function ActionButton({
+  label,
+  pendingLabel,
+  tone = "primary",
+}: {
+  label: string;
+  pendingLabel: string;
+  tone?: "primary" | "quiet";
+}) {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className={
+        tone === "primary"
+          ? "rounded-lg bg-gaa-green px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-gaa-green-dark disabled:cursor-not-allowed disabled:opacity-60"
+          : "rounded-md px-2 py-1 text-xs font-medium text-gray-500 transition hover:bg-gray-200 hover:text-gray-800 disabled:opacity-60"
+      }
+    >
+      {pending ? pendingLabel : label}
+    </button>
+  );
+}
+
+/**
+ * Bank transfers go straight to the club's own account, so Stripe never learns
+ * about them and neither does the app. This is where a volunteer reconciling
+ * the statement records what they can see — and it is what finally lets the
+ * payer be told their money arrived, which until now nothing did.
+ */
+function RecordPayment({ r }: { r: Registration }) {
+  const [markState, markAction] = useActionState<AdminActionState, FormData>(
+    markRegistrationPaid,
+    {}
+  );
+  const [undoState, undoAction] = useActionState<AdminActionState, FormData>(
+    revertRegistrationToPending,
+    {}
+  );
+
+  if (r.payment_status === "paid") {
+    // Stripe settled this against the bank rails. Nothing for a human to add,
+    // and nothing they should be able to unpick.
+    if (r.payment_recorded_by !== "organiser") return null;
+
+    return (
+      <form action={undoAction} className="mt-3 rounded-lg bg-gray-50 p-3 ring-1 ring-gray-200">
+        <input type="hidden" name="registration_id" value={r.id} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-gray-600">
+            Recorded by an organiser — not confirmed by Stripe.
+          </p>
+          <ActionButton label="Undo" pendingLabel="Undoing…" tone="quiet" />
+        </div>
+        {undoState.error && (
+          <p role="alert" className="mt-1 text-xs font-medium text-red-700">
+            {undoState.error}
+          </p>
+        )}
+      </form>
+    );
+  }
+
+  return (
+    <form
+      action={markAction}
+      className="mt-3 rounded-lg bg-gaa-green/5 p-3 ring-1 ring-gaa-green/20"
+    >
+      <input type="hidden" name="registration_id" value={r.id} />
+      <p className="text-xs font-semibold text-gaa-green-dark">
+        Money arrived by bank transfer?
+      </p>
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <div>
+          <label htmlFor={`amount-${r.id}`} className="mb-1 block text-xs text-gray-600">
+            Amount received
+          </label>
+          <input
+            id={`amount-${r.id}`}
+            name="amount"
+            type="number"
+            step="0.01"
+            min="0.01"
+            defaultValue={Number(r.total_amount) || ""}
+            className="w-32 rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm outline-none transition focus:border-gaa-green focus:ring-2 focus:ring-gaa-green/30"
+          />
+        </div>
+        <div className="min-w-[11rem] flex-1">
+          <label htmlFor={`note-${r.id}`} className="mb-1 block text-xs text-gray-600">
+            Note (optional)
+          </label>
+          <input
+            id={`note-${r.id}`}
+            name="note"
+            placeholder="Bank reference, date seen…"
+            className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm outline-none transition focus:border-gaa-green focus:ring-2 focus:ring-gaa-green/30"
+          />
+        </div>
+        <ActionButton label="Mark as paid" pendingLabel="Recording…" />
+      </div>
+      <p className="mt-1.5 text-xs text-gray-500">
+        Pre-filled with the amount due — change it if they sent something different. The
+        payer is emailed a confirmation.
+      </p>
+      {markState.error && (
+        <p role="alert" className="mt-1 text-xs font-medium text-red-700">
+          {markState.error}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
@@ -419,6 +551,16 @@ function Details({ r }: { r: Registration }) {
               )}
             </Field>
             {r.paid_at && <Field label="Paid at">{fmtFull(r.paid_at)}</Field>}
+            {r.payment_recorded_by && (
+              <Field label="Recorded by">
+                {r.payment_recorded_by === "stripe"
+                  ? "Stripe"
+                  : "An organiser, from a bank statement"}
+                {r.payment_note && (
+                  <span className="text-gray-500"> — {r.payment_note}</span>
+                )}
+              </Field>
+            )}
             {r.stripe_invoice_url && (
               <Field label="Invoice">
                 <a
@@ -460,6 +602,7 @@ function Details({ r }: { r: Registration }) {
               </details>
             )}
           </div>
+          <RecordPayment r={r} />
         </section>
       </div>
 
@@ -836,6 +979,12 @@ export default function Dashboard({ registrations }: { registrations: Registrati
     const collected = filtered
       .filter((r) => r.payment_status === "paid")
       .reduce((s, r) => s + Number(r.amount_paid || 0), 0);
+    // Split by provenance. A figure a volunteer typed after reading a bank
+    // statement should not be presented with the same authority as one Stripe
+    // settled, even though both are genuinely collected.
+    const stripeCollected = filtered
+      .filter((r) => r.payment_status === "paid" && r.payment_recorded_by !== "organiser")
+      .reduce((s, r) => s + Number(r.amount_paid || 0), 0);
     // Abandoned checkouts are nobody's debt — counting them would inflate the
     // figure the organisers treat as their chase-up list.
     const outstanding = filtered
@@ -845,6 +994,8 @@ export default function Dashboard({ registrations }: { registrations: Registrati
       teams,
       pledged,
       collected,
+      stripeCollected,
+      manualCollected: collected - stripeCollected,
       outstanding,
       namedPlayers: filtered.reduce((s, r) => s + roster(r).length, 0),
       raffle: filtered.filter((r) => r.sponsor_raffle).length,
@@ -961,8 +1112,12 @@ export default function Dashboard({ registrations }: { registrations: Registrati
           />
         </div>
         <p className="mt-1.5 text-xs text-gray-500">
-          {formatEuro(stats.collected)} confirmed by Stripe of {formatEuro(stats.pledged)} pledged.
-          Only payments Stripe has confirmed count as collected.
+          {formatEuro(stats.collected)} collected of {formatEuro(stats.pledged)} pledged.{" "}
+          {stats.manualCollected > 0
+            ? `${formatEuro(stats.stripeCollected)} confirmed by Stripe, ${formatEuro(
+                stats.manualCollected
+              )} recorded by an organiser from a bank statement.`
+            : "Every figure here has been confirmed by Stripe."}
         </p>
       </div>
 
