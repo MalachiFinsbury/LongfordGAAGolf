@@ -1,38 +1,22 @@
 import type { NextConfig } from "next";
 
-const isDev = process.env.NODE_ENV !== "production";
-
 /**
- * Content Security Policy.
+ * The Content-Security-Policy now lives in proxy.ts, not here.
  *
- * Stripe.js relies on the host page having a sane CSP — without one, an XSS
- * elsewhere on the site could tamper with the payment flow. Stripe's own
- * domains are allowlisted so hosted Checkout and the invoice pages keep
- * working, including `form-action`, which browsers apply to the redirect that
- * follows a server-action form submission.
+ * It has to be built per request to carry a nonce, and a static copy left in
+ * this file would not merely be redundant — a response carrying two CSP headers
+ * is held to *both*, so the old 'unsafe-inline' policy and the new nonce policy
+ * would intersect into one that blocks every script on the page.
+ *
+ * The headers below have no per-request component, so they stay here, where
+ * they also cover the static assets that proxy.ts deliberately skips.
  */
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  // 'unsafe-eval' is only needed by the dev-mode React refresh runtime.
-  `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval' " : ""}https://js.stripe.com https://*.stripe.com`,
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://*.stripe.com",
-  "font-src 'self' data:",
-  "connect-src 'self' https://api.stripe.com https://*.stripe.com https://*.supabase.co",
-  "frame-src https://js.stripe.com https://hooks.stripe.com https://*.stripe.com",
-  "form-action 'self' https://checkout.stripe.com https://*.stripe.com",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "object-src 'none'",
-].join("; ");
-
 const nextConfig: NextConfig = {
   async headers() {
     return [
       {
         source: "/:path*",
         headers: [
-          { key: "Content-Security-Policy", value: contentSecurityPolicy },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "DENY" },

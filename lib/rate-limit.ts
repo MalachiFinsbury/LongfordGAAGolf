@@ -19,16 +19,36 @@ async function clientIp(): Promise<string> {
 
 export type RateLimitResult = { allowed: boolean; count: number };
 
+export type RateLimitOptions = {
+  /**
+   * What to do when the counter itself is unavailable.
+   *
+   * The default is to fail OPEN: for a fundraising form we would rather take a
+   * legitimate entry than reject it, the limiter exists to stop bulk abuse
+   * rather than to be a security boundary, and the expensive downstream action
+   * (emailing an invoice) is still bounded by Stripe's own limits.
+   *
+   * That reasoning does not survive being pointed at the login page, so the
+   * caller there opts out — see `login` in app/actions.ts.
+   */
+  failClosed?: boolean;
+};
+
 /**
  * Counts one attempt against the caller's IP.
- *
- * Fails OPEN — if the counter itself is broken we would rather take a
- * legitimate fundraising entry than reject it. That is a deliberate trade:
- * the limiter exists to stop bulk abuse, not to be a security boundary, and
- * the expensive downstream action (emailing an invoice) is still bounded by
- * Stripe's own rate limits.
  */
-export async function checkRateLimit(scope: string): Promise<RateLimitResult> {
+export async function checkRateLimit(
+  scope: string,
+  { failClosed = false }: RateLimitOptions = {}
+): Promise<RateLimitResult> {
+  const onFailure = (reason: string, detail: unknown): RateLimitResult => {
+    console.error(
+      `[rate-limit] ${reason} for "${scope}", ${failClosed ? "DENYING" : "allowing"} request`,
+      detail
+    );
+    return { allowed: !failClosed, count: 0 };
+  };
+
   try {
     const ip = await clientIp();
     const { data, error } = await getAdminClient().rpc("bump_rate_limit", {
@@ -36,10 +56,7 @@ export async function checkRateLimit(scope: string): Promise<RateLimitResult> {
       p_window_seconds: WINDOW_SECONDS,
     });
 
-    if (error) {
-      console.error("[rate-limit] counter unavailable, allowing request", error.message);
-      return { allowed: true, count: 0 };
-    }
+    if (error) return onFailure("counter unavailable", error.message);
 
     const count = Number(data ?? 0);
     if (count > MAX_PER_WINDOW) {
@@ -47,7 +64,6 @@ export async function checkRateLimit(scope: string): Promise<RateLimitResult> {
     }
     return { allowed: count <= MAX_PER_WINDOW, count };
   } catch (e) {
-    console.error("[rate-limit] check threw, allowing request", e);
-    return { allowed: true, count: 0 };
+    return onFailure("check threw", e);
   }
 }

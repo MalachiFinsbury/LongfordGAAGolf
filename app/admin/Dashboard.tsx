@@ -127,8 +127,15 @@ function download(filename: string, body: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  // Both of these are load-bearing. Firefox ignores a click on an anchor that
+  // is not in the document, so the export silently did nothing there; and
+  // revoking the object URL in the same tick as the click can cancel the
+  // download before the browser has finished reading from it.
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function stamp(): string {

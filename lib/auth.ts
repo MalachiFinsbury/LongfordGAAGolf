@@ -16,6 +16,28 @@ export const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8 hours
 const CLOCK_SKEW_SECONDS = 60;
 
 /**
+ * Revocation lever.
+ *
+ * There is no session store to delete from — the token *is* the session — so
+ * `logout` can only clear the cookie in the browser that asked. A token already
+ * copied elsewhere (a shared clubhouse machine, a screenshot, a proxy log) stays
+ * good until its 8 hours are up, and signing out does not touch it.
+ *
+ * Bumping ADMIN_SESSION_EPOCH in the environment invalidates every token ever
+ * issued under the previous value, immediately and everywhere. It is folded into
+ * the signed payload, so an old token cannot simply claim the new epoch.
+ *
+ * Use any value that changes: `2`, a date, `openssl rand -hex 4`. Rotating
+ * ADMIN_SESSION_SECRET has the same effect, but this can be changed without
+ * touching the key material.
+ */
+function getEpoch(): string {
+  // Must not contain the payload separator, or the token could not be parsed
+  // back apart unambiguously.
+  return (process.env.ADMIN_SESSION_EPOCH ?? "1").replace(/\./g, "_");
+}
+
+/**
  * Fails closed on purpose. The previous fallback to a constant string meant
  * that any environment missing this variable signed cookies with a value
  * published in this repository — forgeable by anyone who read it.
@@ -61,7 +83,7 @@ async function sign(value: string): Promise<string> {
  * only way to revoke it was to rotate ADMIN_SESSION_SECRET.
  */
 export async function createSessionToken(): Promise<string> {
-  const payload = `${SESSION_VALUE}.${Date.now().toString(36)}`;
+  const payload = `${SESSION_VALUE}.${getEpoch()}.${Date.now().toString(36)}`;
   return `${payload}.${await sign(payload)}`;
 }
 
@@ -72,11 +94,15 @@ export async function verifySessionToken(
   if (!token) return false;
 
   const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [value, issuedAt, signature] = parts;
-  if (value !== SESSION_VALUE || !issuedAt || !signature) return false;
+  if (parts.length !== 4) return false;
+  const [value, epoch, issuedAt, signature] = parts;
+  if (value !== SESSION_VALUE || !epoch || !issuedAt || !signature) return false;
 
-  const expected = await sign(`${value}.${issuedAt}`);
+  // Checked before the signature is even computed: a token from a superseded
+  // epoch is dead regardless of how well-formed it is.
+  if (epoch !== getEpoch()) return false;
+
+  const expected = await sign(`${value}.${epoch}.${issuedAt}`);
   if (signature.length !== expected.length) return false;
   let mismatch = 0;
   for (let i = 0; i < expected.length; i++) {

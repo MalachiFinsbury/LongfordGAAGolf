@@ -13,13 +13,22 @@ import {
   MAX_GREENS,
   MAX_DONATION,
   REGISTRATION_DRAFT_KEY,
-  INVOICE_PAYMENT_ENABLED,
+  OFFERED_PAYMENT_METHODS,
+  DEFAULT_PAYMENT_METHOD,
   CLUB_BANK,
   calculateTotal,
   formatEuro,
   isOfferedPaymentMethod,
   type PaymentMethod,
 } from "@/lib/types";
+
+/**
+ * The one method left on offer, if there is only one. A radio group with a
+ * single choice asks a question the payer has no way to answer, so that case
+ * is rendered as a statement instead — see the payment section below.
+ */
+const SOLE_METHOD: PaymentMethod | null =
+  OFFERED_PAYMENT_METHODS.length === 1 ? OFFERED_PAYMENT_METHODS[0] : null;
 
 /**
  * Where the half-filled form lives while the payer is off at Stripe.
@@ -103,21 +112,39 @@ function SubmitButton({ method }: { method: PaymentMethod }) {
   );
 }
 
+/** How each method describes itself, wherever it happens to be shown. */
+const PAYMENT_COPY: Record<
+  PaymentMethod,
+  { icon: string; title: string; blurb: string }
+> = {
+  card: {
+    icon: "💳",
+    title: "Pay now by card",
+    blurb: "Secure Stripe checkout. Instant confirmation and an emailed receipt.",
+  },
+  invoice: {
+    icon: "🧾",
+    title: "Send me an invoice",
+    blurb:
+      "We'll email a formal invoice, payable within 30 days. Best if a company is sponsoring.",
+  },
+  transfer: {
+    icon: "🏦",
+    title: "Bank transfer",
+    blurb: "We'll show you the club's account details to pay manually.",
+  },
+};
+
 function PaymentOption({
   value,
   selected,
   onSelect,
-  title,
-  blurb,
-  icon,
 }: {
   value: PaymentMethod;
   selected: PaymentMethod;
   onSelect: (m: PaymentMethod) => void;
-  title: string;
-  blurb: string;
-  icon: string;
 }) {
+  const { icon, title, blurb } = PAYMENT_COPY[value];
   const isSelected = selected === value;
   return (
     <label
@@ -154,7 +181,8 @@ export default function RegistrationForm() {
   const [green, setGreen] = useState(0);
   const [donation, setDonation] = useState(0);
   const [sponsorRaffle, setSponsorRaffle] = useState(false);
-  const [payMethod, setPayMethod] = useState<PaymentMethod>("card");
+  const [payMethod, setPayMethod] =
+    useState<PaymentMethod>(DEFAULT_PAYMENT_METHOD);
 
   const formRef = useRef<HTMLFormElement>(null);
   // Text values waiting to be written back once the matching inputs exist.
@@ -197,18 +225,89 @@ export default function RegistrationForm() {
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Second pass: the player rows are on the page now, so put the text back.
-  useEffect(() => {
-    if (!draftLoaded || !pendingFields.current || !formRef.current) return;
-    for (const [name, value] of Object.entries(pendingFields.current)) {
+  /** Writes saved text back into the inputs React does not own. */
+  const applyFields = useCallback((fields: Record<string, string>) => {
+    const form = formRef.current;
+    if (!form) return;
+    for (const [name, value] of Object.entries(fields)) {
       if (CONTROLLED_FIELDS.has(name)) continue;
-      const field = formRef.current.elements.namedItem(name);
+      const field = form.elements.namedItem(name);
       if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
         field.value = value;
       }
     }
+  }, []);
+
+  // Second pass: the player rows are on the page now, so put the text back.
+  useEffect(() => {
+    if (!draftLoaded || !pendingFields.current) return;
+    applyFields(pendingFields.current);
     pendingFields.current = null;
-  }, [draftLoaded, numTeams, sponsorRaffle]);
+  }, [draftLoaded, numTeams, sponsorRaffle, applyFields]);
+
+  /**
+   * Puts the DOM back in step with React for the fields React controls.
+   *
+   * A form reset changes those inputs behind React's back. React compares
+   * against its own last render, sees the value it already believes is there,
+   * and so never corrects them — leaving the select reading "No team" beside a
+   * total, and two team blocks, that say otherwise.
+   */
+  const resyncControlled = useCallback(() => {
+    const form = formRef.current;
+    if (!form) return;
+
+    const set = (name: string, value: string) => {
+      const el = form.elements.namedItem(name);
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLSelectElement ||
+        el instanceof HTMLTextAreaElement
+      ) {
+        el.value = value;
+      }
+    };
+
+    set("number_of_teams", String(numTeams));
+    set("tee_box_count", String(teeBox));
+    set("green_count", String(green));
+    set("donation_amount", donation ? String(donation) : "");
+
+    const raffle = form.elements.namedItem("sponsor_raffle");
+    if (raffle instanceof HTMLInputElement) raffle.checked = sponsorRaffle;
+
+    // A radio group comes back as a RadioNodeList; the sole-method case is a
+    // hidden input, which a reset restores to the same value anyway.
+    const method = form.elements.namedItem("payment_method");
+    if (method instanceof RadioNodeList) {
+      for (const radio of method) {
+        if (radio instanceof HTMLInputElement) radio.checked = radio.value === payMethod;
+      }
+    }
+  }, [numTeams, teeBox, green, donation, sponsorRaffle, payMethod]);
+
+  // React resets a form once its action has completed, whatever the result. On
+  // a *rejected* submission that emptied every field the payer had just filled
+  // in — name, email, mobile, and all four players on every team — and put the
+  // controlled selects back to their first option while React state kept the
+  // real values, so the page showed "No team" above a €4,400 total and a
+  // resubmit would have posted the zero that was in the DOM. The draft still
+  // holds the text; React still holds the rest.
+  //
+  // Keyed on the state object rather than on `state.error`, because two
+  // identical refusals in a row are two separate submissions and both reset.
+  useEffect(() => {
+    if (state.ok || !state.error) return;
+    resyncControlled();
+    try {
+      const raw = sessionStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Draft;
+      if (saved.fields) applyFields(saved.fields);
+    } catch {
+      // Nothing recoverable — better a blank form than a broken one.
+    }
+  }, [state, applyFields, resyncControlled]);
 
   // Once the entry is in, the draft has served its purpose. Leaving it would
   // pre-fill the form with someone else's details for the next person.
@@ -497,36 +596,34 @@ export default function RegistrationForm() {
       {/* Payment */}
       <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
         <h2 className="mb-4 text-lg font-bold text-gaa-green-dark">
-          How would you like to pay?
+          {SOLE_METHOD ? "How to pay" : "How would you like to pay?"}
         </h2>
-        <div className="space-y-3">
-          <PaymentOption
-            value="card"
-            selected={payMethod}
-            onSelect={setPayMethod}
-            icon="💳"
-            title="Pay now by card"
-            blurb="Secure Stripe checkout. Instant confirmation and an emailed receipt."
-          />
-          {INVOICE_PAYMENT_ENABLED && (
-            <PaymentOption
-              value="invoice"
-              selected={payMethod}
-              onSelect={setPayMethod}
-              icon="🧾"
-              title="Send me an invoice"
-              blurb="We'll email a formal invoice, payable within 30 days. Best if a company is sponsoring."
-            />
-          )}
-          <PaymentOption
-            value="transfer"
-            selected={payMethod}
-            onSelect={setPayMethod}
-            icon="🏦"
-            title="Bank transfer"
-            blurb="We'll show you the club's account details to pay manually."
-          />
-        </div>
+        {SOLE_METHOD ? (
+          <>
+            {/* Still posted as a field. The server reads the method from the
+                form data, and an absent one would have to be inferred. */}
+            <input type="hidden" name="payment_method" value={SOLE_METHOD} />
+            <div className="rounded-xl border border-gaa-green/30 bg-gaa-green/5 p-4">
+              <p className="text-sm font-semibold text-gray-900">
+                {PAYMENT_COPY[SOLE_METHOD].icon} {PAYMENT_COPY[SOLE_METHOD].title}
+              </p>
+              <p className="mt-0.5 text-xs text-gray-600">
+                {PAYMENT_COPY[SOLE_METHOD].blurb}
+              </p>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3">
+            {OFFERED_PAYMENT_METHODS.map((method) => (
+              <PaymentOption
+                key={method}
+                value={method}
+                selected={payMethod}
+                onSelect={setPayMethod}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       {state.error && (

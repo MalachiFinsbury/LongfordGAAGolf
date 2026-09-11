@@ -56,10 +56,33 @@ export const PAYMENT_METHODS: PaymentMethod[] = ["card", "invoice", "transfer"];
  */
 export const INVOICE_PAYMENT_ENABLED = false;
 
+/**
+ * Whether "pay now by card" is offered to payers.
+ *
+ * Same arrangement as the invoice flag above, and for the same reason. The
+ * Checkout path in lib/payments.ts, the return pages under /register/success
+ * and the webhook that settles a card payment are all untouched, so turning
+ * card payment back on is this one constant. The server action reads it too:
+ * payment_method is an ordinary form field, and a posted "card" must not be
+ * able to start a checkout the club is no longer taking.
+ */
+export const CARD_PAYMENT_ENABLED = false;
+
 /** The subset of methods a payer may actually choose right now. */
 export const OFFERED_PAYMENT_METHODS: PaymentMethod[] = PAYMENT_METHODS.filter(
-  (m) => m !== "invoice" || INVOICE_PAYMENT_ENABLED
+  (m) =>
+    (m !== "card" || CARD_PAYMENT_ENABLED) &&
+    (m !== "invoice" || INVOICE_PAYMENT_ENABLED)
 );
+
+/**
+ * What the form starts on, and what an unrecognised posted method falls back
+ * to. Derived rather than written down: a hard-coded default that later stops
+ * being offered leaves the payer on a page with no option selected and a
+ * submit button labelled for a route they cannot take.
+ */
+export const DEFAULT_PAYMENT_METHOD: PaymentMethod =
+  OFFERED_PAYMENT_METHODS[0] ?? "transfer";
 
 export function isPaymentMethod(value: string): value is PaymentMethod {
   return (PAYMENT_METHODS as string[]).includes(value);

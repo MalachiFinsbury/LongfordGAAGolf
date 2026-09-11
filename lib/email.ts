@@ -403,6 +403,34 @@ ${e.sponsor_raffle ? `\nRaffle prize offered: ${e.raffle_prize || "no descriptio
  * ------------------------------------------------------------------ */
 
 /**
+ * Makes the promise at the top of this file — "nothing in here throws" — true
+ * of the exported functions, not just of the transport.
+ *
+ * `send` already swallows a failed request, but the callers hand us rows of
+ * registrant-supplied data and every message is *rendered* before a request is
+ * ever made. A throw from that half escaped, and the consequences were out of
+ * all proportion to a missing email:
+ *
+ *   - in the Stripe webhook, the payment is recorded and the receipt claimed
+ *     before the send, so the 500 made Stripe retry an already-settled payment
+ *     and the claim then suppressed the receipt for good;
+ *   - in `submitRegistration`, the registration is already saved, so the payer
+ *     saw a failure for an entry that had in fact gone through, and submitting
+ *     again would have created a duplicate;
+ *   - in `markRegistrationPaid`, the organiser had already moved the money to
+ *     paid before the confirmation went out.
+ *
+ * A lost email is a courtesy lost. None of the above is.
+ */
+async function neverThrows(what: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`[email] ${what} failed to send`, e);
+  }
+}
+
+/**
  * Payment confirmed: receipt to the payer, alert to organisers.
  *
  * `notifyOrganisers` exists for the case where an organiser is the one
@@ -414,45 +442,49 @@ export async function sendPaidConfirmation(
   amountPaid: number,
   opts: { notifyOrganisers?: boolean } = {}
 ): Promise<void> {
-  const { notifyOrganisers = true } = opts;
-  const payer = payerPaid(entry, amountPaid);
+  await neverThrows("paid confirmation", async () => {
+    const { notifyOrganisers = true } = opts;
+    const payer = payerPaid(entry, amountPaid);
 
-  const jobs = [
-    send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
-  ];
+    const jobs = [
+      send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
+    ];
 
-  if (notifyOrganisers) {
-    const organiser = organiserAlert(entry, true, amountPaid);
-    jobs.push(
+    if (notifyOrganisers) {
+      const organiser = organiserAlert(entry, true, amountPaid);
+      jobs.push(
+        send({
+          to: organiserRecipients(),
+          subject: organiser.subject,
+          html: organiser.html,
+          text: organiser.text,
+          // Organisers can answer the registrant straight from the alert.
+          replyTo: entry.email,
+        })
+      );
+    }
+
+    // Concurrent, and each already swallows its own failures — one bad organiser
+    // address must not cost the payer their confirmation.
+    await Promise.all(jobs);
+  });
+}
+
+/** Bank transfer chosen: payment instructions to the payer, alert to organisers. */
+export async function sendTransferInstructions(entry: EntrySummary): Promise<void> {
+  await neverThrows("transfer instructions", async () => {
+    const payer = payerTransfer(entry);
+    const organiser = organiserAlert(entry, false, 0);
+
+    await Promise.all([
+      send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
       send({
         to: organiserRecipients(),
         subject: organiser.subject,
         html: organiser.html,
         text: organiser.text,
-        // Organisers can answer the registrant straight from the alert.
         replyTo: entry.email,
-      })
-    );
-  }
-
-  // Concurrent, and each already swallows its own failures — one bad organiser
-  // address must not cost the payer their confirmation.
-  await Promise.all(jobs);
-}
-
-/** Bank transfer chosen: payment instructions to the payer, alert to organisers. */
-export async function sendTransferInstructions(entry: EntrySummary): Promise<void> {
-  const payer = payerTransfer(entry);
-  const organiser = organiserAlert(entry, false, 0);
-
-  await Promise.all([
-    send({ to: [entry.email], subject: payer.subject, html: payer.html, text: payer.text }),
-    send({
-      to: organiserRecipients(),
-      subject: organiser.subject,
-      html: organiser.html,
-      text: organiser.text,
-      replyTo: entry.email,
-    }),
-  ]);
+      }),
+    ]);
+  });
 }

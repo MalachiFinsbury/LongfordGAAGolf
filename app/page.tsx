@@ -2,6 +2,12 @@ import Image from "next/image";
 import RegistrationForm from "./RegistrationForm";
 import banner from "@/public/banner.jpg";
 
+// Awaiting searchParams below already forces this, but the nonce-based CSP in
+// proxy.ts depends on it: a prerendered page's scripts carry no nonce and the
+// policy blocks them all. Stated outright so that removing the ?payment=
+// handling one day cannot silently take the homepage down.
+export const dynamic = "force-dynamic";
+
 export default async function Home({
   searchParams,
 }: {

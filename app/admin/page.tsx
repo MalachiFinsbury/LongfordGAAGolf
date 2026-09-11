@@ -6,7 +6,13 @@ import { type Registration } from "@/lib/types";
 import { logout } from "@/app/actions";
 import Dashboard from "./Dashboard";
 
-export const metadata = { title: "Registrations — Longford GAA Golf Classic" };
+export const metadata = {
+  title: "Registrations — Longford GAA Golf Classic",
+  // /admin is linked from the public homepage, so crawlers find it by following
+  // an ordinary link. They get redirected to the login page rather than seeing
+  // anything, but there is no reason for either to sit in a search index.
+  robots: { index: false, follow: false },
+};
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {

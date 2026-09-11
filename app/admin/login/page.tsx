@@ -1,7 +1,17 @@
 import Link from "next/link";
 import LoginForm from "./LoginForm";
 
-export const metadata = { title: "Organiser login — Longford GAA Golf Classic" };
+export const metadata = {
+  title: "Organiser login — Longford GAA Golf Classic",
+  robots: { index: false, follow: false },
+};
+
+// Required by the nonce-based CSP in proxy.ts. Next stamps the nonce onto its
+// scripts during SSR, from a header that only exists once there is a request —
+// so a page prerendered at build time ships scripts with no nonce, and the
+// policy then blocks every one of them. A blank page, with the reason visible
+// only in the browser console.
+export const dynamic = "force-dynamic";
 
 export default function AdminLoginPage() {
   return (

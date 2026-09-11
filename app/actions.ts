@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
-import { getPublicClient, getAdminClient } from "@/lib/supabase";
+import { getAdminClient } from "@/lib/supabase";
 import {
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -19,6 +19,7 @@ import {
   PLAYERS_PER_TEAM,
   calculateTotal,
   isOfferedPaymentMethod,
+  DEFAULT_PAYMENT_METHOD,
   type PaymentMethod,
   type Team,
 } from "@/lib/types";
@@ -164,12 +165,13 @@ export async function submitRegistration(
   const raffle_prize = sponsor_raffle ? str(formData.get("raffle_prize"), 1000) : "";
 
   const rawMethod = str(formData.get("payment_method"));
-  // Anything not currently on offer falls back to bank transfer instead of
-  // being taken at face value — that covers junk as before, and now also
-  // "invoice" arriving from a form that no longer shows it.
+  // Anything not currently on offer falls back to the default instead of being
+  // taken at face value — that covers junk as before, and also "card" or
+  // "invoice" posted by hand against a form that no longer shows them. The
+  // form field is the only thing that was removed; this is the control.
   const payment_method: PaymentMethod = isOfferedPaymentMethod(rawMethod)
     ? rawMethod
-    : "transfer";
+    : DEFAULT_PAYMENT_METHOD;
 
   const address = str(formData.get("address")) || null;
   const total_amount = calculateTotal({
@@ -188,10 +190,18 @@ export async function submitRegistration(
     donation_amount,
   });
 
-  if (payment_method !== "transfer" && orderLines.length === 0) {
+  // Nothing to bill is not always nothing to register: "no team — sponsorship
+  // or donation only" exists so a raffle-prize donor can come through, and a
+  // pledged prize costs nothing. An entirely empty basket is a mis-submission
+  // though, and the Stripe routes cannot raise a zero-euro checkout or invoice
+  // even when a prize was offered.
+  const raffleOnly = sponsor_raffle && payment_method === "transfer";
+  if (orderLines.length === 0 && !raffleOnly) {
     return {
       ok: false,
-      error: "There is nothing to pay for — select at least one team or sponsorship.",
+      error:
+        "There's nothing to register yet — please add a team, a sponsorship, " +
+        "a donation, or a raffle prize.",
     };
   }
 
@@ -247,10 +257,17 @@ export async function submitRegistration(
         .is("stripe_invoice_id", null);
       if (error) throw error;
     } else {
-      // Generated here rather than read back from the insert: the anon key has
-      // insert-only access under RLS, so it cannot SELECT the row it wrote.
+      // Generated here rather than read back from the insert, so the id is
+      // known before the row exists and the two Stripe paths below can use it
+      // without a round trip.
       registrationId = crypto.randomUUID();
-      const { error } = await getPublicClient()
+      // Written with the service-role key, like every other statement in this
+      // action. The anon key was the alternative, and it is published to every
+      // browser that loads the site: an insert policy it can satisfy is an
+      // insert *anyone* can perform, straight against PostgREST, without ever
+      // touching the rate limit, the clamps or the validation above. The
+      // policy is dropped in supabase/migrations/20260911120100.
+      const { error } = await getAdminClient()
         .from("registrations")
         .insert({ id: registrationId, ...entry, payment_status: "pending" });
       if (error) throw error;
@@ -492,7 +509,14 @@ export async function login(
 
   // The dashboard holds every registrant's contact details behind a single
   // shared password, so cap how fast it can be guessed.
-  const { allowed } = await checkRateLimit("admin-login");
+  //
+  // Fails CLOSED, unlike the registration form. A limiter that waves everything
+  // through when its counter is unreachable is exactly no limiter during the
+  // window an attacker most benefits from — and the counter lives in the same
+  // Supabase project that an unapplied migration or an outage takes out. Locking
+  // the organisers out of the dashboard for the duration is an inconvenience;
+  // an unmetered guessing budget against one shared password is not.
+  const { allowed } = await checkRateLimit("admin-login", { failClosed: true });
   if (!allowed) {
     return { error: "Too many attempts. Please wait a few minutes and try again." };
   }
