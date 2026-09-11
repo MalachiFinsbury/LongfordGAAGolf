@@ -169,7 +169,7 @@ describe("submitRegistration — validation", () => {
         payment_method: "transfer",
       })
     );
-    expect(result).toEqual({ ok: true, method: "transfer" });
+    expect(result).toMatchObject({ ok: true, method: "transfer" });
     expect(savedRow().total_amount).toBe(0);
   });
 
@@ -531,7 +531,7 @@ describe("submitRegistration — saving", () => {
 describe("submitRegistration — bank transfer", () => {
   it("confirms the transfer route to the form", async () => {
     const result = await submitRegistration({ ok: false }, registrationForm());
-    expect(result).toEqual({ ok: true, method: "transfer" });
+    expect(result).toMatchObject({ ok: true, method: "transfer" });
   });
 
   it("emails payment instructions before returning", async () => {

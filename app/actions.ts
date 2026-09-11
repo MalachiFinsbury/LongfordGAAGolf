@@ -19,6 +19,7 @@ import {
   PLAYERS_PER_TEAM,
   calculateTotal,
   isOfferedPaymentMethod,
+  reference,
   DEFAULT_PAYMENT_METHOD,
   type PaymentMethod,
   type Team,
@@ -36,6 +37,23 @@ export type SubmitState = {
   method?: PaymentMethod;
   /** Stripe-hosted invoice page, when the payer asked to be invoiced. */
   invoiceUrl?: string;
+  /**
+   * What the confirmation screen needs to ask for the money.
+   *
+   * Returned from the server rather than read back off the form state: this is
+   * the figure that was actually saved, after clamping, and the screen telling
+   * a payer to transfer a different amount from the one on their entry is how
+   * a payment arrives that nobody can reconcile. React also resets the form
+   * once the action settles, so the fields these came from are gone by the
+   * time the confirmation renders.
+   */
+  amountDue?: number;
+  /** What the payer should quote on the transfer — their own name. */
+  payerName?: string;
+  /** The club's handle for this entry, for phone calls and queries. */
+  reference?: string;
+  /** The saved row, so the confirmation screen can post an "I have paid" claim. */
+  registrationId?: string;
 };
 
 /**
@@ -337,6 +355,10 @@ export async function submitRegistration(
         ok: true,
         method: "invoice",
         invoiceUrl: invoice.hosted_invoice_url ?? undefined,
+        amountDue: total_amount,
+        payerName: name,
+        reference: reference(registrationId),
+        registrationId,
       };
     } catch (e) {
       console.error("[stripe] invoice creation failed", e);
@@ -361,7 +383,72 @@ export async function submitRegistration(
   // notification at all.
   await sendTransferInstructions({ id: registrationId, ...entry });
 
-  return { ok: true, method: "transfer" };
+  return {
+    ok: true,
+    method: "transfer",
+    amountDue: total_amount,
+    payerName: name,
+    reference: reference(registrationId),
+    registrationId,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * The payer's own word
+ * ------------------------------------------------------------------ */
+
+export type ClaimPaidState = { ok?: boolean; error?: string };
+
+/**
+ * "I have paid" on the confirmation screen.
+ *
+ * Records that the payer says the transfer has been sent. It does NOT mark the
+ * registration paid, and never touches `amount_paid` or `payment_status`: this
+ * endpoint is public — the payer has no login — so the most it can ever be is
+ * an assertion by whoever holds the registration id. Letting it move money
+ * state would be a self-service "mark my own entry paid" button.
+ *
+ * What it buys is real, though. Transfers land in the club's own account with
+ * nothing to announce them, so without this the organisers cannot tell a payer
+ * who has sent the money from one who has forgotten, and every transfer
+ * registrant looks identical until someone reads the statement line by line.
+ */
+export async function markPaidByPayer(
+  _prev: ClaimPaidState,
+  formData: FormData
+): Promise<ClaimPaidState> {
+  const id = str(formData.get("registration_id"), 64);
+  if (!UUID_RE.test(id)) {
+    return { error: "We couldn't identify that registration." };
+  }
+
+  // Public and unauthenticated, so it gets a budget like the form does.
+  const { allowed } = await checkRateLimit("claim-paid");
+  if (!allowed) {
+    return { error: "Too many attempts from this connection. Please try again shortly." };
+  }
+
+  const { data, error } = await getAdminClient()
+    .from("registrations")
+    .update({ payer_claimed_paid_at: new Date().toISOString() })
+    .eq("id", id)
+    // Only a row still awaiting money. A registration Stripe settled, or one an
+    // organiser already reconciled, has nothing to learn from this.
+    .eq("payment_status", "pending")
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[claim-paid] update failed", error.message);
+    return { error: "Sorry, we couldn't record that. Please try again." };
+  }
+  // Already paid, already recorded, or an id that matches nothing. Thanking
+  // them either way: the payer has done their part, and this is not the screen
+  // on which to explain the club's bookkeeping.
+  if (!data) return { ok: true };
+
+  revalidatePath("/admin");
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------------ *

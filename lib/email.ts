@@ -22,9 +22,13 @@ import {
   PRICE_PER_TEAM,
   PRICE_PER_TEE_BOX,
   formatEuro,
+  reference,
   type PaymentMethod,
   type Team,
 } from "./types.ts";
+
+// Re-exported because this module is where callers have always found it.
+export { reference };
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
@@ -136,10 +140,7 @@ function esc(value: string | null | undefined): string {
   );
 }
 
-/** Short, quotable handle for phone calls and bank references. */
-export function reference(id: string): string {
-  return `LGC-${id.slice(0, 8).toUpperCase()}`;
-}
+
 
 function orderRows(e: EntrySummary): Array<[string, string]> {
   const rows: Array<[string, string]> = [];

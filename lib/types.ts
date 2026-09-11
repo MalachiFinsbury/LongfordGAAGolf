@@ -125,6 +125,14 @@ export type Registration = {
   payment_recorded_by: "stripe" | "organiser" | null;
   /** Free text from whoever recorded it — a bank reference, a date seen. */
   payment_note: string | null;
+  /**
+   * When the payer pressed "I have paid" on the confirmation screen.
+   *
+   * An unverified claim, not a payment: the endpoint behind that button is
+   * public. It never counts towards a collected total — it only tells the
+   * organisers whose bank statement is worth checking first.
+   */
+  payer_claimed_paid_at: string | null;
   stripe_customer_id: string | null;
   stripe_checkout_session_id: string | null;
   stripe_payment_intent_id: string | null;
@@ -145,6 +153,18 @@ export function calculateTotal(input: {
     input.green_count * PRICE_PER_GREEN +
     (input.donation_amount || 0)
   );
+}
+
+/**
+ * Short, quotable handle for an entry — for phone calls and bank references.
+ *
+ * Lives here rather than in lib/email.ts because it is a pure string helper
+ * with nothing to do with sending mail, and the confirmation screen needs it
+ * too: a server action reaching into the email module just to format an id
+ * made every test that mocks email have to stub this as well.
+ */
+export function reference(id: string): string {
+  return `LGC-${id.slice(0, 8).toUpperCase()}`;
 }
 
 export function formatEuro(amount: number): string {

@@ -43,6 +43,7 @@ export function registration(overrides: Partial<Registration> = {}): Registratio
     paid_confirmation_sent_at: null,
     payment_recorded_by: null,
     payment_note: null,
+    payer_claimed_paid_at: null,
     stripe_customer_id: null,
     stripe_checkout_session_id: null,
     stripe_payment_intent_id: null,

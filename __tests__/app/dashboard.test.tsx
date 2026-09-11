@@ -106,6 +106,19 @@ const recordedByHand = registration({
   created_at: "2026-09-04T09:00:00.000Z",
 });
 
+const claimsToHavePaid = registration({
+  name: "Eimear Ní Chonaill",
+  email: "eimear@example.ie",
+  mobile: "0875555555",
+  number_of_teams: 1,
+  teams: [team(["Eimear Ní Chonaill"])],
+  total_amount: 2200,
+  payment_method: "transfer",
+  payment_status: "pending",
+  payer_claimed_paid_at: "2026-09-05T14:30:00.000Z",
+  created_at: "2026-09-05T09:00:00.000Z",
+});
+
 const ALL = [recordedByHand, awaitingTransfer, paid, abandoned];
 
 function show(rows: Registration[] = ALL) {
@@ -354,5 +367,65 @@ describe("dashboard — views", () => {
     const table = screen.getByRole("table");
     expect(within(table).getByText("Brian Mac Gabhann")).toBeTruthy();
     expect(within(table).getByText("Aoife Ní Ruairc")).toBeTruthy();
+  });
+});
+
+describe("dashboard — the payer's own word", () => {
+  async function openCard(name: string) {
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(name) }));
+  }
+
+  it("flags it on the card without needing the row expanded", async () => {
+    // The chase-up list is worked top to bottom; someone who says they have
+    // paid is the one worth checking the statement for first.
+    show([claimsToHavePaid]);
+    expect(screen.getByText(/payer says paid/i)).toBeTruthy();
+  });
+
+  it("shows when they said it, once expanded", async () => {
+    show([claimsToHavePaid]);
+    await openCard("Eimear Ní Chonaill");
+    expect(screen.getByText(/They have paid — 5 Sept 2026/)).toBeTruthy();
+  });
+
+  it("prompts beside the button an organiser is about to press", async () => {
+    show([claimsToHavePaid]);
+    await openCard("Eimear Ní Chonaill");
+    expect(screen.getByText(/worth checking the statement/i)).toBeTruthy();
+  });
+
+  it("counts for nothing in the money figures", async () => {
+    // The load-bearing one. A claim is unverified — anyone can press that
+    // button — so it must never reach a total the club acts on.
+    show([claimsToHavePaid]);
+    expect(stat("Collected")).toBe("€0");
+    expect(stat("Outstanding")).toBe("€2,200");
+  });
+
+  it("still shows as awaiting payment, not paid", async () => {
+    show([claimsToHavePaid]);
+    expect(screen.getByText(/Awaiting payment/)).toBeTruthy();
+  });
+
+  it("stops being mentioned once the payment is actually recorded", async () => {
+    show([
+      registration({
+        ...claimsToHavePaid,
+        payment_status: "paid",
+        amount_paid: 2200,
+        payment_recorded_by: "organiser",
+      }),
+    ]);
+    await openCard("Eimear Ní Chonaill");
+    expect(screen.queryByText(/They have paid —/)).toBeNull();
+  });
+
+  it("goes into the export, so it can be reconciled in a spreadsheet", async () => {
+    show([claimsToHavePaid]);
+    await userEvent.click(screen.getByText("Export CSV"));
+
+    const csv = await lastCsv();
+    expect(csv.split(/\r?\n/)[0]).toContain("Payer says paid");
+    expect(csv).toMatch(/5 Sept 2026/);
   });
 });

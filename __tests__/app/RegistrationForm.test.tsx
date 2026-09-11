@@ -245,7 +245,7 @@ describe("RegistrationForm — submitting", () => {
     await fillRequired(u);
     await u.click(screen.getByRole("button", { name: /Submit/i }));
 
-    expect(await screen.findByText(/Thank you!/)).toBeDefined();
+    expect(await screen.findByText(/Thanks — we have your details/)).toBeDefined();
     expect(screen.getByText(CLUB_BANK.iban)).toBeDefined();
     expect(screen.getByText(CLUB_BANK.bic)).toBeDefined();
     expect(screen.getByText(CLUB_BANK.accountName)).toBeDefined();
@@ -262,7 +262,7 @@ describe("RegistrationForm — submitting", () => {
     render(<RegistrationForm />);
     await fillRequired(u);
     await u.click(screen.getByRole("button", { name: /Submit/i }));
-    await screen.findByText(/Thank you!/);
+    await screen.findByText(/Thanks — we have your details/);
 
     await u.click(screen.getAllByRole("button", { name: /Copy/ })[1]);
     expect(writeText).toHaveBeenCalledWith(CLUB_BANK.iban);
@@ -279,7 +279,7 @@ describe("RegistrationForm — submitting", () => {
     await fillRequired(u);
     await u.click(screen.getByRole("button", { name: /Submit/i }));
 
-    const link = await screen.findByRole("link", { name: /View and pay your invoice/ });
+    const link = await screen.findByRole("link", { name: /Pay now by card/ });
     expect(link.getAttribute("href")).toBe("https://invoice.stripe.com/i/test");
   });
 
@@ -292,7 +292,7 @@ describe("RegistrationForm — submitting", () => {
 
     expect(await screen.findByText(/Too many registrations/)).toBeDefined();
     // Still the form, not the confirmation screen.
-    expect(screen.queryByText(/Thank you!/)).toBeNull();
+    expect(screen.queryByText(/Thanks — we have your details/)).toBeNull();
   });
 
   /*
@@ -417,7 +417,7 @@ describe("RegistrationForm — the saved draft", () => {
     await waitFor(() => expect(draft()).not.toBeNull());
 
     await u.click(screen.getByRole("button", { name: /Submit/i }));
-    await screen.findByText(/Thank you!/);
+    await screen.findByText(/Thanks — we have your details/);
 
     expect(sessionStorage.getItem(REGISTRATION_DRAFT_KEY)).toBeNull();
   });

@@ -299,7 +299,7 @@ describe("asking to be invoiced", () => {
       registrationForm({ payment_method: "invoice" })
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       method: "invoice",
       invoiceUrl: "https://invoice.stripe.com/i/test",

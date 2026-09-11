@@ -161,6 +161,7 @@ function registrationsCsv(rows: Registration[]): string {
     "Status",
     "Amount paid",
     "Paid at",
+    "Payer says paid",
     "Invoice number",
     "Invoice URL",
   ];
@@ -183,6 +184,7 @@ function registrationsCsv(rows: Registration[]): string {
       STATUS_LABEL[r.payment_status] ?? r.payment_status,
       Number(r.amount_paid) || 0,
       fmtFull(r.paid_at),
+      fmtFull(r.payer_claimed_paid_at),
       r.stripe_invoice_number ?? "",
       r.stripe_invoice_url ?? "",
     ]
@@ -444,6 +446,15 @@ function RecordPayment({ r }: { r: Registration }) {
       <p className="text-xs font-semibold text-gaa-green-dark">
         Money arrived by bank transfer?
       </p>
+      {r.payer_claimed_paid_at && (
+        // Their own word, from the confirmation screen. Worth surfacing right
+        // beside the button, and worth nothing on its own — it is unverified,
+        // so it prompts a look at the statement rather than standing in for one.
+        <p className="mt-1 text-xs font-medium text-amber-800">
+          The payer said they had sent this on {fmtFull(r.payer_claimed_paid_at)} — worth
+          checking the statement.
+        </p>
+      )}
       <div className="mt-2 flex flex-wrap items-end gap-2">
         <div>
           <label htmlFor={`amount-${r.id}`} className="mb-1 block text-xs text-gray-600">
@@ -549,6 +560,13 @@ function Details({ r }: { r: Registration }) {
           <div className="space-y-1.5">
             <Field label="Method">{METHOD_LABEL[r.payment_method] ?? r.payment_method}</Field>
             <Field label="Status">{STATUS_LABEL[r.payment_status] ?? r.payment_status}</Field>
+            {r.payer_claimed_paid_at && r.payment_status !== "paid" && (
+              <Field label="Payer says">
+                <span className="font-medium text-amber-800">
+                  They have paid — {fmtFull(r.payer_claimed_paid_at)}
+                </span>
+              </Field>
+            )}
             <Field label="Amount paid">
               <span className="tabular-nums">{formatEuro(Number(r.amount_paid))}</span>
               {Number(r.amount_paid) > 0 && Number(r.amount_paid) < Number(r.total_amount) && (
@@ -677,6 +695,7 @@ function RegistrationCard({
     r.green_count > 0 && `${r.green_count} green`,
     Number(r.donation_amount) > 0 && `${formatEuro(Number(r.donation_amount))} donation`,
     r.sponsor_raffle && "raffle prize",
+    r.payer_claimed_paid_at && r.payment_status !== "paid" && "payer says paid",
     r.number_of_teams > 0 && `${named}/${r.number_of_teams * PLAYERS_PER_TEAM} players named`,
   ].filter(Boolean) as string[];
 

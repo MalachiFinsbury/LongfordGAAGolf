@@ -2,7 +2,12 @@
 
 import { useActionState, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
-import { submitRegistration, type SubmitState } from "./actions";
+import {
+  markPaidByPayer,
+  submitRegistration,
+  type ClaimPaidState,
+  type SubmitState,
+} from "./actions";
 import {
   MAX_TEAMS,
   PLAYERS_PER_TEAM,
@@ -354,7 +359,14 @@ export default function RegistrationForm() {
   // The card path never reaches here — that submit redirects to Stripe.
   if (state.ok) {
     return (
-      <Confirmation method={state.method ?? "transfer"} invoiceUrl={state.invoiceUrl} />
+      <Confirmation
+        method={state.method ?? "transfer"}
+        invoiceUrl={state.invoiceUrl}
+        amountDue={state.amountDue}
+        payerName={state.payerName}
+        reference={state.reference}
+        registrationId={state.registrationId}
+      />
     );
   }
 
@@ -637,68 +649,227 @@ export default function RegistrationForm() {
   );
 }
 
+/** The "I have paid" button, and what it becomes once pressed. */
+function ClaimPaidButton({ registrationId }: { registrationId: string }) {
+  const [state, action] = useActionState<ClaimPaidState, FormData>(markPaidByPayer, {});
+
+  if (state.ok) {
+    return (
+      <div
+        role="status"
+        className="rounded-lg bg-gaa-green/10 px-4 py-3 text-center text-sm font-medium text-gaa-green-dark ring-1 ring-gaa-green/30"
+      >
+        Thanks — we&apos;ve noted that you&apos;ve sent it. We&apos;ll confirm by
+        email once it reaches the club account.
+      </div>
+    );
+  }
+
+  return (
+    <form action={action}>
+      <input type="hidden" name="registration_id" value={registrationId} />
+      <ClaimPaidSubmit />
+      {state.error && (
+        <p role="alert" className="mt-2 text-center text-xs font-medium text-red-700">
+          {state.error}
+        </p>
+      )}
+      <p className="mt-2 text-center text-xs text-gray-500">
+        Only press this once you&apos;ve actually made the transfer — an organiser
+        checks it against the club&apos;s bank statement.
+      </p>
+    </form>
+  );
+}
+
+function ClaimPaidSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="w-full rounded-lg bg-gaa-green px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-gaa-green-dark disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {pending ? "Saving…" : "I have paid"}
+    </button>
+  );
+}
+
 function Confirmation({
   method,
   invoiceUrl,
+  amountDue,
+  payerName,
+  reference,
+  registrationId,
 }: {
   method: PaymentMethod;
   invoiceUrl?: string;
+  amountDue?: number;
+  payerName?: string;
+  reference?: string;
+  registrationId?: string;
 }) {
-  return (
-    <div className="space-y-6">
-      <div className="rounded-2xl bg-white p-8 text-center shadow-lg ring-1 ring-black/5">
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gaa-green/10 text-3xl">
-          ✅
-        </div>
-        <h2 className="text-2xl font-bold text-gaa-green-dark">Thank you!</h2>
-        <p className="mt-2 text-gray-600">
-          Your registration for the Longford GAA Golf Classic 2026 has been
-          received. We&apos;ll be in touch about tee times.
-        </p>
-      </div>
+  const [open, setOpen] = useState(true);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
-      {method === "invoice" && (
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h3 className="text-lg font-bold text-gaa-green-dark">
-            Your invoice is on its way
-          </h3>
-          <p className="mt-1 text-sm text-gray-600">
-            We&apos;ve emailed a formal invoice, payable within 30 days. You can
-            settle it by card from the link in that email.
+  // Escape closes it, and the page behind must not scroll while it is up.
+  useEffect(() => {
+    if (!open) return;
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [open]);
+
+  const details = (
+    <>
+      {amountDue !== undefined && amountDue > 0 && (
+        <div className="rounded-xl bg-gaa-gold/15 px-5 py-4 text-center ring-1 ring-gaa-gold/50">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gaa-green-dark">
+            Amount to pay
           </p>
-          {invoiceUrl && (
-            <a
-              href={invoiceUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-4 inline-block rounded-lg bg-gaa-green px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-gaa-green-dark"
-            >
-              View and pay your invoice
-            </a>
-          )}
+          <p className="mt-0.5 text-4xl font-bold tabular-nums text-gaa-green-dark">
+            {formatEuro(amountDue)}
+          </p>
         </div>
       )}
 
-      {/* Shown on both paths. The hosted invoice page only offers card, so an
-          invoiced company that would rather pay by transfer needs these details
-          here instead of being told to look for them in the email. */}
-      <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-        <h3 className="text-lg font-bold text-gaa-green-dark">
-          {method === "invoice"
-            ? "Prefer to pay by bank transfer?"
-            : "Payment by bank transfer"}
-        </h3>
-        <p className="mt-1 text-sm text-gray-600">
-          {method === "invoice"
-            ? "Transfer the invoiced amount to the account below instead, quoting your invoice number as the reference."
-            : "To complete your entry, please transfer the total amount due to the account below. Use your name as the payment reference."}
-        </p>
-        <div className="mt-4 space-y-2">
-          <CopyValue label="Account name" value={CLUB_BANK.accountName} />
-          <CopyValue label="IBAN" value={CLUB_BANK.iban} />
-          <CopyValue label="BIC" value={CLUB_BANK.bic} />
-        </div>
+      {method === "invoice" && invoiceUrl && (
+        <a
+          href={invoiceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-4 block rounded-lg bg-gaa-green px-5 py-3 text-center text-sm font-semibold text-white shadow-sm transition hover:bg-gaa-green-dark"
+        >
+          Pay now by card
+        </a>
+      )}
+
+      <p className="mb-2 mt-5 text-sm font-semibold text-gray-900">
+        {method === "invoice"
+          ? "Or transfer to the club account"
+          : "Transfer to the club account"}
+      </p>
+      <div className="space-y-2">
+        <CopyValue label="Account name" value={CLUB_BANK.accountName} />
+        <CopyValue label="IBAN" value={CLUB_BANK.iban} />
+        <CopyValue label="BIC" value={CLUB_BANK.bic} />
+        {/* Without this the money arrives as an unattributable credit, and the
+            organisers cannot tell whose place it paid for. */}
+        {payerName && <CopyValue label="Payment reference — use this" value={payerName} />}
       </div>
-    </div>
+
+      <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 ring-1 ring-amber-200">
+        Please use{" "}
+        <span className="font-bold">{payerName ? `"${payerName}"` : "your own name"}</span> as the
+        payment reference, so we can match your transfer to your entry and confirm
+        your place.
+      </p>
+    </>
+  );
+
+  return (
+    <>
+      {/* What sits behind the modal, and what remains once it is dismissed. The
+          payer can reopen it, so the IBAN is never only inside something they
+          have already closed. */}
+      <div className="space-y-5">
+        <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-black/5">
+          <h2 className="text-xl font-bold text-gaa-green-dark">
+            Thanks — we have your details
+          </h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Your registration has been received, but your place is not secured
+            until payment reaches the club.
+          </p>
+          {!open && (
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="mt-4 rounded-lg bg-gaa-green px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-gaa-green-dark"
+            >
+              Show payment details
+            </button>
+          )}
+        </div>
+
+        {!open && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">{details}</div>
+        )}
+      </div>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 py-8 backdrop-blur-sm"
+          onClick={(e) => {
+            // A click on the backdrop closes; one inside the panel does not.
+            if (e.target === e.currentTarget) setOpen(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pay-modal-title"
+            className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl ring-2 ring-gaa-gold"
+          >
+            <div className="relative bg-gaa-green-dark px-6 py-5 text-center">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-gaa-gold">
+                Action required
+              </p>
+              <h2 id="pay-modal-title" className="mt-1.5 text-2xl font-bold text-white">
+                Your place is not secured until you pay
+              </h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-white/80">
+                Team places are held in the order payment arrives. Please make the
+                bank transfer below to confirm your slot.
+              </p>
+              <button
+                ref={closeRef}
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label="Close"
+                className="absolute right-3 top-3 rounded-md px-2 py-1 text-lg leading-none text-white/70 transition hover:bg-white/10 hover:text-white"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-6 py-6">
+              {details}
+
+              <div className="mt-6 border-t border-gray-200 pt-5">
+                {registrationId && <ClaimPaidButton registrationId={registrationId} />}
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="mt-3 w-full rounded-lg border border-gray-300 bg-white px-6 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                >
+                  I&apos;ll pay later
+                </button>
+              </div>
+
+              <p className="mt-4 text-center text-xs text-gray-500">
+                We&apos;ve emailed these payment details to you too.
+                {reference && (
+                  <>
+                    {" "}
+                    Your entry reference is{" "}
+                    <span className="font-mono font-semibold">{reference}</span>.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
